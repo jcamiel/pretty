@@ -12,12 +12,12 @@ https://microsoftedge.github.io/Demos/json-dummy-data
 
 ## Performance
 
-With just a byte reader:
+### With just a byte reader:
 
 
 ```shell
 $ time cat /Users/jc/Downloads/5MB.json | pretty --iter 5000 > /dev/null        
-cat /Users/jc/Downloads/5MB.json  0.00s user 0.00s system 18% cpu 0.026 total
+cat 5mb.json  0.00s user 0.00s system 18% cpu 0.026 total
 pretty --iter 5000 > /dev/null  11.25s user 0.86s system 99% cpu 12.134 total
 ```
 
@@ -25,9 +25,15 @@ With serde pretty:
 
 ```shell
 $ time cat /Users/jc/Downloads/5MB.json | pretty --iter 5000 --serde > /dev/null
-cat /Users/jc/Downloads/5MB.json  0.00s user 0.00s system 54% cpu 0.010 total
+cat 5mb.json  0.00s user 0.00s system 54% cpu 0.010 total
 pretty --iter 5000 --serde > /dev/null  69.43s user 11.71s system 99% cpu 1:21.17 total
 ```
 
+### Skipping whitespaces (simple
 
+```shell
+$ time cat /Users/jc/Downloads/5MB.json | pretty --iter 5000 > /dev/null
+cat 5mb.json  0.00s user 0.01s system 35% cpu 0.019 total
+pretty --iter 5000 > /dev/null  35.43s user 1.10s system 98% cpu 36.914 total
+```
 
