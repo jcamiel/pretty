@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cat /Users/jc/Downloads/5MB.json | pretty > /dev/null
+cat 5mb.json | target/release/pretty --iter 5000 > /dev/null

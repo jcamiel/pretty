@@ -1,13 +1,20 @@
+## Data
+
 https://microsoftedge.github.io/Demos/json-dummy-data
+
+## Implemetations
 
 ## RFC 7159: Spec JSON
 
 <https://datatracker.ietf.org/doc/html/rfc7159>
 
-
 ## Go Standard Lib JSON Decoder
 
 <https://github.com/golang/go/blob/master/src/encoding/json/jsontext/decode.go>
+
+## Serde JSON
+
+<https://github.com/serde-rs/json>
 
 
 ## Performance
