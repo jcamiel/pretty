@@ -1,8 +1,9 @@
+mod parser;
+
+use crate::parser::Parser;
 use serde_json::Value;
 use std::env::Args;
 use std::io::Read;
-use std::iter::Peekable;
-use std::str::{Chars, Utf8Error};
 use std::{env, io};
 
 fn main() {
@@ -86,61 +87,8 @@ fn pretty_raw(bytes: &[u8]) -> String {
 }
 
 fn pretty(bytes: &[u8]) -> String {
-    let mut parser = Parser::try_new(bytes).unwrap();
-    parser.parse()
-}
-
-struct Parser<'input> {
-    bytes_len: usize,
-    buffer: Peekable<Chars<'input>>,
-}
-
-const SPACE: char = ' ';
-const TAB: char = '\t';
-const LF: char = '\n';
-const CR: char = '\r';
-
-impl<'input> Parser<'input> {
-    fn try_new(buffer: &'input [u8]) -> Result<Self, String> {
-        let buffer = str::from_utf8(buffer);
-        let buffer = match buffer {
-            Ok(b) => b,
-            Err(_) => return Err("Invalid UTF-8 string".to_string()),
-        };
-        let bytes_len = buffer.len();
-        let buffer = buffer.chars().peekable();
-        let parser = Parser { buffer, bytes_len };
-        Ok(parser)
-    }
-
-    pub fn parse(&mut self) -> String {
-        let mut output = String::with_capacity(2 * self.bytes_len);
-
-        loop {
-            match self.buffer.next() {
-                Some(SPACE) | Some(TAB) | Some(LF) | Some(CR) => continue,
-                Some(c) => {
-                    output.push(c);
-                    continue;
-                }
-                None => break,
-            }
-        }
-        output
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Parser;
-
-    // #[test]
-    // fn parse_simple_json() {
-    //     let input = r#"{
-    //     "foo": "bar"
-    //     }"#;
-    //     let mut parser = Parser::new(input.as_bytes());
-    //     let out = parser.parse();
-    //     println!("{out}");
-    // }
+    let mut parser = Parser::new(bytes);
+    let mut output = String::new();
+    parser.parse(&mut output).unwrap();
+    output
 }

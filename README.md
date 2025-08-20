@@ -59,3 +59,17 @@ $ time cat 5mb.json | pretty --iter 5000 > /dev/null
 cat 5mb.json  0.00s user 0.01s system 61% cpu 0.016 total
 pretty --iter 5000 > /dev/null  43.04s user 0.08s system 99% cpu 43.163 total
 ```
+
+### Byte oriented + write in chunks + validating UTF-8 on demand
+
+```shell
+ $ time cat 5mb.json | target/release/pretty --serde --iter 5000 > /dev/null
+cat 5mb.json  0.00s user 0.01s system 39% cpu 0.027 total
+target/release/pretty --serde --iter 5000 > /dev/null  69.38s user 10.02s system 99% cpu 1:19.49 total
+```
+
+```shell
+$ time cat 5mb.json | target/release/pretty --iter 5000 > /dev/null 
+cat 5mb.json  0.00s user 0.01s system 36% cpu 0.034 total
+target/release/pretty --iter 5000 > /dev/null  33.77s user 2.57s system 99% cpu 36.392 total
+```
