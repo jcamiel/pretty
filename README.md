@@ -16,6 +16,9 @@ https://microsoftedge.github.io/Demos/json-dummy-data
 
 <https://github.com/serde-rs/json>
 
+## Test suite
+
+https://github.com/nst/JSONTestSuite
 
 ## Performance
 
@@ -73,3 +76,11 @@ $ time cat 5mb.json | target/release/pretty --iter 5000 > /dev/null
 cat 5mb.json  0.00s user 0.01s system 36% cpu 0.034 total
 target/release/pretty --iter 5000 > /dev/null  33.77s user 2.57s system 99% cpu 36.392 total
 ```
+
+## TODO
+
+- Empty array should be formatted `[]`
+- Empty Object should be formatted `{}`
+- Tests unit on strings
+- JSON parsing suite
+- Add limit on nesting

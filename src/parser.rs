@@ -1,11 +1,19 @@
 use std::fmt;
 use std::fmt::Write;
 
+/// A fast JSON formatter / pretty printer.
+/// This is a fast JSON formatter (x2 compare ti pretty print with serde). This parser process
+/// bytes and do not requires pre UTF-8 validation. UTF-8 validation is done on the fly, while parsing
+/// strings. THis implementation try to not allocate anything. It does not try to normalise, remove
+/// unnecessary escaping, it just format the actual input with spaces and (optionaly) color.
 pub struct Parser<'input> {
     input: &'input [u8],
-    pos: usize,
+    pos: BytePos,
     indent: usize,
 }
+
+#[derive(Debug, Copy, Clone)]
+struct BytePos(usize);
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -17,6 +25,15 @@ pub enum ParseError {
     Fmt(fmt::Error),
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum Color {
+    Yellow,
+    Purple,
+    Green,
+    BoldBlue,
+    BoldGrey,
+}
+
 type ParseResult<T> = Result<T, ParseError>;
 
 impl From<fmt::Error> for ParseError {
@@ -25,13 +42,16 @@ impl From<fmt::Error> for ParseError {
     }
 }
 
+
+
+
 const SPACES: &str = "                                                                 ";
 
 impl<'input> Parser<'input> {
     pub fn new(input: &'input [u8]) -> Self {
         Parser {
             input,
-            pos: 0,
+            pos: BytePos(0),
             indent: 0,
         }
     }
@@ -39,13 +59,13 @@ impl<'input> Parser<'input> {
     #[inline]
     fn next_byte(&mut self) -> Option<u8> {
         let b = self.peek_byte()?;
-        self.pos += 1;
+        self.pos.0 += 1;
         Some(b)
     }
 
     #[inline]
     fn peek_byte(&mut self) -> Option<u8> {
-        self.input.get(self.pos).copied()
+        self.input.get(self.pos.0).copied()
     }
 
     #[inline]
@@ -59,7 +79,7 @@ impl<'input> Parser<'input> {
 
     fn skip_whitespace(&mut self) {
         while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.pos += 1;
+            self.pos.0 += 1;
         }
     }
 
@@ -91,7 +111,7 @@ impl<'input> Parser<'input> {
     // -------- Value parsing --------
     fn parse_value(&mut self, out: &mut impl Write) -> ParseResult<()> {
         match self.peek_byte() {
-            Some(b'"') => self.parse_string(out),
+            Some(b'"') => self.parse_string(out, Color::Green),
             Some(b'-' | b'0'..=b'9') => self.parse_number(out),
             Some(b'{') => self.parse_object(out),
             Some(b'[') => self.parse_array(out),
@@ -106,8 +126,17 @@ impl<'input> Parser<'input> {
     // -------- Object --------
     fn parse_object(&mut self, out: &mut impl Write) -> ParseResult<()> {
         self.expect_byte(b'{')?;
-        out.write_char('{')?;
-        out.write_char('\n')?;
+
+        // For empty objects, we keep a short compact form:
+        self.skip_whitespace();
+        if self.peek_byte() == Some(b'}') {
+            self.next_byte();
+            write_str("{}", out, Color::BoldGrey)?;
+            return Ok(());
+        }
+
+        // Now, we have a non-empty object.
+        writeln_char('{', out, Color::BoldGrey)?;
         self.indent += 1;
 
         let mut first = true;
@@ -116,8 +145,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b'}') {
                 self.next_byte();
                 self.indent -= 1;
+                writeln(out)?;
                 self.write_indent(out)?;
-                out.write_char('}')?;
+                write_char('}', out, Color::BoldGrey)?;
                 return Ok(());
             }
 
@@ -126,17 +156,17 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                out.write_str(",\n")?;
+                writeln_char(',', out, Color::BoldGrey)?;
             }
 
             // Parse key
             self.write_indent(out)?;
-            self.parse_string(out)?;
+            self.parse_string(out, Color::BoldBlue)?;
 
             // Parse colon
             self.skip_whitespace();
             self.expect_byte(b':')?;
-            out.write_str(": ")?;
+            write_str(": ", out, Color::BoldGrey)?;
 
             // Parse value
             self.skip_whitespace();
@@ -147,7 +177,7 @@ impl<'input> Parser<'input> {
     // -------- Array --------
     fn parse_array(&mut self, out: &mut impl Write) -> ParseResult<()> {
         self.expect_byte(b'[')?;
-        out.write_str("[\n")?;
+        writeln_char('[', out, Color::BoldGrey)?;
         self.indent += 1;
 
         let mut first = true;
@@ -156,8 +186,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b']') {
                 self.next_byte();
                 self.indent -= 1;
+                writeln(out)?;
                 self.write_indent(out)?;
-                out.write_char(']')?;
+                write_char(']', out, Color::BoldGrey)?;
                 return Ok(());
             }
 
@@ -166,7 +197,7 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                out.write_str(",\n")?;
+                writeln_char(',', out, Color::BoldGrey)?;
             }
 
             self.write_indent(out)?;
@@ -174,14 +205,14 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn slice_str_unchecked(&self, start: usize, end: usize) -> &str {
-        debug_assert!(start <= end && end <= self.input.len());
-        let bytes = &self.input[start..end];
+    fn slice_str_unchecked(&self, start: BytePos, end: BytePos) -> &str {
+        debug_assert!(start.0 <= end.0 && end.0 <= self.input.len());
+        let bytes = &self.input[start.0..end.0];
         unsafe { std::str::from_utf8_unchecked(bytes) }
     }
 
     // -------- String (preserves escapes) --------
-    fn parse_string(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_string(&mut self, out: &mut impl Write, color: Color) -> ParseResult<()> {
         let start = self.pos;
         self.expect_byte(b'"')?;
 
@@ -189,9 +220,10 @@ impl<'input> Parser<'input> {
             match b {
                 b'"' => {
                     self.next_byte();
+
                     // Flush plain segment before exit.
                     let string = self.slice_str_unchecked(start, self.pos);
-                    out.write_str(string)?;
+                    write_str(string, out, color)?;
                     return Ok(());
                 }
                 // Escaping
@@ -226,7 +258,7 @@ impl<'input> Parser<'input> {
         for &b in b"true" {
             self.expect_byte(b)?;
         }
-        out.write_str("true")?;
+        write_str("true", out, Color::Yellow)?;
         Ok(())
     }
 
@@ -234,7 +266,7 @@ impl<'input> Parser<'input> {
         for &b in b"false" {
             self.expect_byte(b)?;
         }
-        out.write_str("false")?;
+        write_str("false", out, Color::Yellow)?;
         Ok(())
     }
 
@@ -273,7 +305,7 @@ impl<'input> Parser<'input> {
 
         // Finally, write numbers
         let digits = self.slice_str_unchecked(start, self.pos);
-        out.write_str(digits)?;
+        write_str(digits, out, Color::Purple)?;
 
         Ok(())
     }
@@ -371,6 +403,49 @@ impl<'input> Parser<'input> {
         char::from_u32(code).ok_or(ParseError::InvalidUtf8)
     }
 }
+
+#[inline]
+fn write_str(s: &str, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
+    write_start_color(out, color)?;
+    out.write_str(s)?;
+    out.write_str("\x1b[0m")
+}
+
+#[inline]
+fn write_char(c: char, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
+    write_start_color(out, color)?;
+    out.write_char(c)?;
+    out.write_str("\x1b[0m")
+}
+
+#[inline]
+fn writeln_char(c: char, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
+    write_start_color(out, color)?;
+    out.write_char(c)?;
+    out.write_str("\x1b[0m\n")
+}
+
+#[inline]
+fn writeln(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_char('\n')
+}
+
+#[inline]
+fn write_start_color(out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
+    match color {
+        Color::Green => out.write_str("\x1b[0;32m"),
+        Color::Yellow => out.write_str("\x1b[0;33m"),
+        Color::Purple => out.write_str("\x1b[0;35m"),
+        Color::BoldBlue => out.write_str("\x1b[1;34m"),
+        Color::BoldGrey => out.write_str("\x1b[1;39m"),
+    }
+}
+
+// #[inline]
+// fn write_nl(out: &mut impl Write) -> Result<(), fmt::Error> {
+//     out.write_char('\n')
+// }
+
 
 #[cfg(test)]
 mod tests {
