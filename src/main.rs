@@ -4,6 +4,7 @@ use crate::format::{Color, Parser};
 use serde_json::Value;
 use std::env::Args;
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 
 fn main() {
@@ -15,11 +16,24 @@ fn main() {
         }
     };
 
-    let buffer = match std::fs::read(&config.file_path) {
-        Ok(data) => data,
-        Err(err) => {
-            eprintln!("Error reading file '{}': {}", config.file_path.display(), err);
-            std::process::exit(1);
+    let buffer = if config.file_path.to_string_lossy() == "-" {
+        // Read from stdin
+        let mut buffer = Vec::new();
+        match std::io::stdin().read_to_end(&mut buffer) {
+            Ok(_) => buffer,
+            Err(err) => {
+                eprintln!("Error reading from stdin: {}", err);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        // Read from file
+        match std::fs::read(&config.file_path) {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("Error reading file '{}': {}", config.file_path.display(), err);
+                std::process::exit(1);
+            }
         }
     };
 
@@ -67,7 +81,7 @@ fn print_usage() {
     println!("A fast JSON pretty-printer");
     println!();
     println!("Arguments:");
-    println!("  <JSON_FILE>  Path to the JSON file to format");
+    println!("  <JSON_FILE>  Path to the JSON file to format (use '-' for stdin)");
     println!();
     println!("Options:");
     println!("  --serde       Use serde for JSON parsing");
