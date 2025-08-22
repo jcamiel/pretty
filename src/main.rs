@@ -63,10 +63,7 @@ struct Config {
 
 fn parse_args(args: Args) -> Result<Config, String> {
     let args: Vec<String> = args.skip(1).collect();
-    parse_args_impl(args)
-}
-
-fn parse_args_impl(args: Vec<String>) -> Result<Config, String> {
+    
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
