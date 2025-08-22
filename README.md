@@ -76,8 +76,9 @@ target/release/pretty --iter 5000 5mb.json  33.77s user 2.57s system 99% cpu 36.
 
 ## TODO
 
-- Empty array should be formatted `[]`
-- Tests unit on strings
-- JSON parsing suite
-- Add limit on nesting
-- Remove BOM
+- [x] Empty array should be formatted `[]`
+- [] Tests unit on strings
+- [] JSON parsing suite
+- [] Add limit on nesting
+- [] Remove BOM
+- use `[]` instead of `Vec` in `InvalidUtf8`

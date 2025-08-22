@@ -209,6 +209,16 @@ impl<'input> Parser<'input> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
         // array = begin-array [ value *( value-separator value ) ] end-array
         self.expect_byte(b'[')?;
+
+        // For empty arrays, we keep a short compact form:
+        self.skip_whitespace();
+        if self.peek_byte() == Some(b']') {
+            self.next_byte();
+            self.write_empty_arr(out)?;
+            return Ok(());
+        }
+
+        // Now, we have a non-empty array.
         self.write_begin_arr(out)?;
         self.indent += 1;
 
@@ -528,6 +538,15 @@ impl<'input> Parser<'input> {
     }
 
     #[inline]
+    fn write_empty_arr(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m[]\x1b[0m")
+        } else {
+            out.write_str("[]")
+        }
+    }
+
+    #[inline]
     fn write_begin_arr(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
         if self.color == Color::AnsiCode {
             out.write_str("\x1b[1;39m[\x1b[0m\n")
@@ -539,9 +558,9 @@ impl<'input> Parser<'input> {
     #[inline]
     fn write_end_arr(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
         if self.color == Color::AnsiCode {
-            out.write_str("\x1b[1;39m]\x1b[0m\n")
+            out.write_str("\x1b[1;39m]\x1b[0m")
         } else {
-            out.write_str("]\n")
+            out.write_str("]")
         }
     }
 
