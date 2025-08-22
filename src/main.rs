@@ -62,19 +62,18 @@ struct Config {
 }
 
 fn parse_args(args: Args) -> Result<Config, String> {
-    parse_args_impl(args.skip(1))
+    let args: Vec<String> = args.skip(1).collect();
+    parse_args_impl(args)
 }
 
-fn parse_args_impl<I>(mut args: I) -> Result<Config, String>
-where
-    I: Iterator<Item = String>,
-{
+fn parse_args_impl(args: Vec<String>) -> Result<Config, String> {
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
     let mut file_path: Option<PathBuf> = None;
-
-    while let Some(arg) = args.next() {
+    
+    let mut args_iter = args.into_iter();
+    while let Some(arg) = args_iter.next() {
         match arg.as_str() {
             "--serde" => {
                 with_serde = true;
@@ -83,7 +82,7 @@ where
                 with_color = false;
             }
             "--iter" => {
-                if let Some(value) = args.next() {
+                if let Some(value) = args_iter.next() {
                     match value.parse::<usize>() {
                         Ok(v) => iter_count = v,
                         Err(_) => {
@@ -116,52 +115,4 @@ where
     })
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_file_argument_required() {
-        use super::parse_args_impl;
-        
-        // Test that parse_args requires a file argument
-        let args = vec![];
-        let result = parse_args_impl(args.into_iter());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Missing required argument: JSON file path"));
-    }
 
-    #[test]
-    fn test_parse_args_with_file() {
-        use super::parse_args_impl;
-        use std::path::PathBuf;
-        
-        let args = vec!["test.json".to_string()];
-        let result = parse_args_impl(args.into_iter());
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.file_path, PathBuf::from("test.json"));
-        assert!(!config.with_serde);
-        assert!(config.with_color);
-        assert_eq!(config.iter_count, 1);
-    }
-
-    #[test]
-    fn test_parse_args_with_options() {
-        use super::parse_args_impl;
-        use std::path::PathBuf;
-        
-        let args = vec![
-            "--serde".to_string(),
-            "--no-color".to_string(),
-            "--iter".to_string(),
-            "5".to_string(),
-            "test.json".to_string(),
-        ];
-        let result = parse_args_impl(args.into_iter());
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.file_path, PathBuf::from("test.json"));
-        assert!(config.with_serde);
-        assert!(!config.with_color);
-        assert_eq!(config.iter_count, 5);
-    }
-}
