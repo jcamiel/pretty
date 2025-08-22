@@ -556,7 +556,7 @@ impl<'input> Parser<'input> {
     #[inline]
     fn write_null(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
         if self.color == Color::AnsiCode {
-            out.write_str("null")
+            out.write_str("\x1b[0;35mnull\x1b[0m")
         } else {
             out.write_str("null")
         }
@@ -565,7 +565,7 @@ impl<'input> Parser<'input> {
     #[inline]
     fn write_number(&self, s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
         if self.color == Color::AnsiCode {
-            out.write_str("\x1b[0;35m")?;
+            out.write_str("\x1b[0;36m")?;
             out.write_str(s)?;
             out.write_str("\x1b[0m")
         } else {
