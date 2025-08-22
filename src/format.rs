@@ -1,6 +1,6 @@
 use std::cmp::PartialEq;
 use std::fmt;
-use std::fmt::Write;
+use std::fmt::{Formatter, Write};
 
 /// A fast JSON formatter / pretty printer.
 /// This is a fast JSON formatter (x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
@@ -18,15 +18,43 @@ pub struct Parser<'input> {
 
 /// A byte position in a bytes stream.
 #[derive(Debug, Copy, Clone)]
-struct BytePos(usize);
+pub struct BytePos(usize);
 
 #[derive(Debug)]
 pub enum ParseError {
     Eof,
-    InvalidByte(u8),
-    InvalidUtf8,
-    InvalidEscape(u8),
+    InvalidByte(u8, BytePos),
+    InvalidUtf8(Vec<u8>, BytePos),
+    InvalidEscape(u8, BytePos),
     Fmt(fmt::Error),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::Eof => write!(f, "unexpected end of file"),
+            ParseError::InvalidByte(byte, pos) => {
+                write!(f, "invalid byte <{byte:02x?}> at offset {}", pos.0)
+            }
+            ParseError::InvalidUtf8(bytes, pos) => {
+                let hex = bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                write!(
+                    f,
+                    "invalid {} UTF-8 bytes <{hex}> at offset {}",
+                    bytes.len(),
+                    pos.0
+                )
+            }
+            ParseError::InvalidEscape(byte, pos) => {
+                write!(f, "invalid escaped byte <{byte:02x?}> at offset {}", pos.0)
+            }
+            ParseError::Fmt(error) => write!(f, "error writing {error}"),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -75,7 +103,7 @@ impl<'input> Parser<'input> {
     fn expect_byte(&mut self, expected: u8) -> ParseResult<()> {
         match self.next_byte() {
             Some(b) if b == expected => Ok(()),
-            Some(b) => Err(ParseError::InvalidByte(b)),
+            Some(b) => Err(ParseError::InvalidByte(b, BytePos(self.pos.0 - 1))),
             None => Err(ParseError::Eof),
         }
     }
@@ -88,7 +116,7 @@ impl<'input> Parser<'input> {
 
         // Have we completely consumed our payload?
         if let Some(b) = self.peek_byte() {
-            Err(ParseError::InvalidByte(b))
+            Err(ParseError::InvalidByte(b, self.pos))
         } else {
             Ok(())
         }
@@ -116,7 +144,7 @@ impl<'input> Parser<'input> {
             Some(b't') => self.parse_true(out),
             Some(b'f') => self.parse_false(out),
             Some(b'n') => self.parse_null(out),
-            Some(b) => Err(ParseError::InvalidByte(b)),
+            Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
             None => Err(ParseError::Eof),
         }
     }
@@ -244,15 +272,18 @@ impl<'input> Parser<'input> {
                             for _ in 0..4 {
                                 let hex = self.next_byte().ok_or(ParseError::Eof)?;
                                 if !(hex as char).is_ascii_hexdigit() {
-                                    return Err(ParseError::InvalidByte(hex));
+                                    return Err(ParseError::InvalidByte(
+                                        hex,
+                                        BytePos(self.pos.0 - 1),
+                                    ));
                                 }
                             }
                         }
-                        Some(b) => return Err(ParseError::InvalidEscape(b)),
+                        Some(b) => return Err(ParseError::InvalidEscape(b, self.pos)),
                         None => return Err(ParseError::Eof),
                     }
                 }
-                0x00..=0x1F => return Err(ParseError::InvalidByte(b)),
+                0x00..=0x1F => return Err(ParseError::InvalidByte(b, self.pos)),
                 _ => {
                     // Decode valid UTF-8 char
                     self.next_utf8_char()?;
@@ -333,7 +364,7 @@ impl<'input> Parser<'input> {
                 }
                 Ok(())
             }
-            Some(b) => Err(ParseError::InvalidByte(b)),
+            Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
             None => Err(ParseError::Eof),
         }
     }
@@ -350,7 +381,7 @@ impl<'input> Parser<'input> {
                     }
                     Ok(())
                 }
-                Some(b) => Err(ParseError::InvalidByte(b)),
+                Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
                 None => Err(ParseError::Eof),
             }?
         }
@@ -372,7 +403,7 @@ impl<'input> Parser<'input> {
                         }
                         Ok(())
                     }
-                    Some(b) => Err(ParseError::InvalidByte(b)),
+                    Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
                     None => Err(ParseError::Eof),
                 }
             }
@@ -387,6 +418,8 @@ impl<'input> Parser<'input> {
             (b & 0xC0) == 0x80
         }
 
+        let start_pos = self.pos;
+
         let b1 = self.next_byte().ok_or(ParseError::Eof)?;
         if b1 < 0x80 {
             return Ok(());
@@ -397,7 +430,7 @@ impl<'input> Parser<'input> {
             return if (0xC2..=0xDF).contains(&b1) && cont(b2) {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8)
+                Err(ParseError::InvalidUtf8(vec![b1, b2], start_pos))
             };
         }
 
@@ -411,7 +444,7 @@ impl<'input> Parser<'input> {
             } {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8)
+                Err(ParseError::InvalidUtf8(vec![b1, b2, b3], self.pos))
             };
         }
 
@@ -424,13 +457,12 @@ impl<'input> Parser<'input> {
         } {
             Ok(())
         } else {
-            Err(ParseError::InvalidUtf8)
+            Err(ParseError::InvalidUtf8(vec![b1, b2, b3, b4], self.pos))
         }
     }
 }
 
 const SPACES: &str = "                                                                 ";
-
 
 /// Methods to print on a [Write], with color, or not.
 impl<'input> Parser<'input> {

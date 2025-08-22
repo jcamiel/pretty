@@ -2,8 +2,8 @@ mod format;
 
 use crate::format::{Color, Parser};
 use serde_json::Value;
-use std::env::Args;
 use std::env;
+use std::env::Args;
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -47,17 +47,22 @@ fn main() {
     };
 
     for _ in 1..=config.iter_count {
-        let s = run(&buffer, config.with_color);
-        println!("{s}");
+        match run(&buffer, config.with_color) {
+            Ok(s) => println!("{s}"),
+            Err(err) => {
+                eprintln!("Error: {err}");
+                std::process::exit(2);
+            }
+        }
     }
 }
 
-fn pretty_serde(bytes: &[u8], _color: bool) -> String {
+fn pretty_serde(bytes: &[u8], _color: bool) -> Result<String, String> {
     let json = serde_json::from_slice::<Value>(bytes).unwrap();
-    serde_json::to_string_pretty(&json).unwrap()
+    serde_json::to_string_pretty(&json).map_err(|err| err.to_string())
 }
 
-fn pretty(bytes: &[u8], color: bool) -> String {
+fn pretty(bytes: &[u8], color: bool) -> Result<String, String> {
     let color = if color {
         Color::AnsiCode
     } else {
@@ -65,10 +70,9 @@ fn pretty(bytes: &[u8], color: bool) -> String {
     };
     let mut parser = Parser::new(bytes, color);
     let mut output = String::new();
-    parser.format(&mut output).unwrap();
-    output
+    parser.format(&mut output).map_err(|err| err.to_string())?;
+    Ok(output)
 }
-
 
 #[derive(Debug)]
 struct Config {
@@ -95,26 +99,26 @@ fn print_usage() {
 
 fn parse_args(args: Args) -> Result<Config, String> {
     let args: Vec<String> = args.skip(1).collect();
-    
+
     // Handle help flags first
     if args.is_empty() {
         print_usage();
         std::process::exit(0);
     }
-    
+
     for arg in &args {
         if arg == "--help" || arg == "-h" {
             print_usage();
             std::process::exit(0);
         }
     }
-    
+
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
     let mut file_path: Option<Option<PathBuf>> = None;
-    
     let mut args_iter = args.into_iter();
+
     while let Some(arg) = args_iter.next() {
         match arg.as_str() {
             "--serde" => {
@@ -160,5 +164,3 @@ fn parse_args(args: Args) -> Result<Config, String> {
         file_path,
     })
 }
-
-

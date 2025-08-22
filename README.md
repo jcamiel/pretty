@@ -18,7 +18,11 @@ https://microsoftedge.github.io/Demos/json-dummy-data
 
 ## Test suite
 
-https://github.com/nst/JSONTestSuite
+<https://github.com/nst/JSONTestSuite>
+
+<https://github.com/flenniken/utf8tests>
+
+
 
 ## Performance
 
