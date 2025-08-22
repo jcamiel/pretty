@@ -80,7 +80,7 @@ target/release/pretty --iter 5000 > /dev/null  33.77s user 2.57s system 99% cpu 
 ## TODO
 
 - Empty array should be formatted `[]`
-- Empty Object should be formatted `{}`
 - Tests unit on strings
 - JSON parsing suite
 - Add limit on nesting
+- Remove BOM

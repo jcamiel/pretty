@@ -26,12 +26,9 @@ pub enum ParseError {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum Color {
-    Yellow,
-    Purple,
-    Green,
-    BoldBlue,
-    BoldGrey,
+enum StringMode {
+    Key,
+    Value,
 }
 
 type ParseResult<T> = Result<T, ParseError>;
@@ -41,11 +38,6 @@ impl From<fmt::Error> for ParseError {
         ParseError::Fmt(e)
     }
 }
-
-
-
-
-const SPACES: &str = "                                                                 ";
 
 impl<'input> Parser<'input> {
     pub fn new(input: &'input [u8]) -> Self {
@@ -77,25 +69,8 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.pos.0 += 1;
-        }
-    }
-
-    fn write_indent(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
-        let n = self.indent * 2;
-        let full_chunks = n / SPACES.len();
-        let remainder = n % SPACES.len();
-        for _ in 0..full_chunks {
-            out.write_str(SPACES)?;
-        }
-        out.write_str(&SPACES[..remainder])?;
-        Ok(())
-    }
-
-    // -------- Top-level parse --------
-    pub fn parse(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    /// Format and prettify the JSON
+    pub fn format(&mut self, out: &mut impl Write) -> ParseResult<()> {
         self.skip_whitespace();
         self.parse_value(out)?;
         self.skip_whitespace();
@@ -108,10 +83,22 @@ impl<'input> Parser<'input> {
         }
     }
 
-    // -------- Value parsing --------
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.pos.0 += 1;
+        }
+    }
+
+    /// Value
     fn parse_value(&mut self, out: &mut impl Write) -> ParseResult<()> {
+        // From <https://datatracker.ietf.org/doc/html/rfc7159#section-3>:
+        //
+        // value = false / null / true / object / array / number / string
+        // false = %x66.61.6c.73.65   ; false
+        // null  = %x6e.75.6c.6c      ; null
+        // true  = %x74.72.75.65      ; true
         match self.peek_byte() {
-            Some(b'"') => self.parse_string(out, Color::Green),
+            Some(b'"') => self.parse_string(out, StringMode::Value),
             Some(b'-' | b'0'..=b'9') => self.parse_number(out),
             Some(b'{') => self.parse_object(out),
             Some(b'[') => self.parse_array(out),
@@ -123,20 +110,24 @@ impl<'input> Parser<'input> {
         }
     }
 
-    // -------- Object --------
+    /// Object
     fn parse_object(&mut self, out: &mut impl Write) -> ParseResult<()> {
+        // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
+        // object = begin-object [ member *( value-separator member ) ]
+        // end-object
+        // member = string name-separator value
         self.expect_byte(b'{')?;
 
         // For empty objects, we keep a short compact form:
         self.skip_whitespace();
         if self.peek_byte() == Some(b'}') {
             self.next_byte();
-            write_str("{}", out, Color::BoldGrey)?;
+            write_empty_obj(out)?;
             return Ok(());
         }
 
         // Now, we have a non-empty object.
-        writeln_char('{', out, Color::BoldGrey)?;
+        write_begin_obj(out)?;
         self.indent += 1;
 
         let mut first = true;
@@ -145,9 +136,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b'}') {
                 self.next_byte();
                 self.indent -= 1;
-                writeln(out)?;
+                write_ln(out)?;
                 self.write_indent(out)?;
-                write_char('}', out, Color::BoldGrey)?;
+                write_end_obj(out)?;
                 return Ok(());
             }
 
@@ -156,17 +147,17 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                writeln_char(',', out, Color::BoldGrey)?;
+                write_value_sep(out)?;
             }
 
             // Parse key
             self.write_indent(out)?;
-            self.parse_string(out, Color::BoldBlue)?;
+            self.parse_string(out, StringMode::Key)?;
 
             // Parse colon
             self.skip_whitespace();
             self.expect_byte(b':')?;
-            write_str(": ", out, Color::BoldGrey)?;
+            write_name_sep(out)?;
 
             // Parse value
             self.skip_whitespace();
@@ -174,10 +165,12 @@ impl<'input> Parser<'input> {
         }
     }
 
-    // -------- Array --------
+    /// Array
     fn parse_array(&mut self, out: &mut impl Write) -> ParseResult<()> {
+        // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
+        // array = begin-array [ value *( value-separator value ) ] end-array
         self.expect_byte(b'[')?;
-        writeln_char('[', out, Color::BoldGrey)?;
+        write_begin_arr(out)?;
         self.indent += 1;
 
         let mut first = true;
@@ -186,9 +179,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b']') {
                 self.next_byte();
                 self.indent -= 1;
-                writeln(out)?;
+                write_ln(out)?;
                 self.write_indent(out)?;
-                write_char(']', out, Color::BoldGrey)?;
+                write_end_arr(out)?;
                 return Ok(());
             }
 
@@ -197,7 +190,7 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                writeln_char(',', out, Color::BoldGrey)?;
+                write_value_sep(out)?;
             }
 
             self.write_indent(out)?;
@@ -211,8 +204,10 @@ impl<'input> Parser<'input> {
         unsafe { std::str::from_utf8_unchecked(bytes) }
     }
 
-    // -------- String (preserves escapes) --------
-    fn parse_string(&mut self, out: &mut impl Write, color: Color) -> ParseResult<()> {
+    /// String (preserves escapes)
+    fn parse_string(&mut self, out: &mut impl Write, mode: StringMode) -> ParseResult<()> {
+        // From <https://datatracker.ietf.org/doc/html/rfc7159#section-8>
+
         let start = self.pos;
         self.expect_byte(b'"')?;
 
@@ -223,7 +218,10 @@ impl<'input> Parser<'input> {
 
                     // Flush plain segment before exit.
                     let string = self.slice_str_unchecked(start, self.pos);
-                    write_str(string, out, color)?;
+                    match mode {
+                        StringMode::Key => write_key(string, out)?,
+                        StringMode::Value => write_value(string, out)?,
+                    };
                     return Ok(());
                 }
                 // Escaping
@@ -253,12 +251,12 @@ impl<'input> Parser<'input> {
         Err(ParseError::Eof)
     }
 
-    // -------- Literals --------
+    /// Literals
     fn parse_true(&mut self, out: &mut impl Write) -> ParseResult<()> {
         for &b in b"true" {
             self.expect_byte(b)?;
         }
-        write_str("true", out, Color::Yellow)?;
+        write_true(out)?;
         Ok(())
     }
 
@@ -266,7 +264,7 @@ impl<'input> Parser<'input> {
         for &b in b"false" {
             self.expect_byte(b)?;
         }
-        write_str("false", out, Color::Yellow)?;
+        write_false(out)?;
         Ok(())
     }
 
@@ -274,7 +272,7 @@ impl<'input> Parser<'input> {
         for &b in b"null" {
             self.expect_byte(b)?;
         }
-        out.write_str("null")?;
+        write_null(out)?;
         Ok(())
     }
 
@@ -305,7 +303,7 @@ impl<'input> Parser<'input> {
 
         // Finally, write numbers
         let digits = self.slice_str_unchecked(start, self.pos);
-        write_str(digits, out, Color::Purple)?;
+        write_number(digits, out)?;
 
         Ok(())
     }
@@ -372,84 +370,148 @@ impl<'input> Parser<'input> {
     }
 
     // -------- UTF-8 decoder --------
-    fn next_utf8_char(&mut self) -> ParseResult<char> {
+    fn next_utf8_char(&mut self) -> ParseResult<()> {
+        #[inline(always)]
+        fn cont(b: u8) -> bool {
+            (b & 0xC0) == 0x80
+        }
+
         let b1 = self.next_byte().ok_or(ParseError::Eof)?;
         if b1 < 0x80 {
-            return Ok(b1 as char);
+            return Ok(());
         }
-        let (needed, mut code): (usize, u32) = if b1 & 0b1110_0000 == 0b1100_0000 {
-            (2, (b1 & 0b0001_1111) as u32)
-        } else if b1 & 0b1111_0000 == 0b1110_0000 {
-            (3, (b1 & 0b0000_1111) as u32)
-        } else if b1 & 0b1111_1000 == 0b1111_0000 {
-            (4, (b1 & 0b0000_0111) as u32)
-        } else {
-            return Err(ParseError::InvalidUtf8);
-        };
 
-        for _ in 1..needed {
-            let b = self.next_byte().ok_or(ParseError::Eof)?;
-            if b & 0b1100_0000 != 0b1000_0000 {
-                return Err(ParseError::InvalidUtf8);
-            }
-            code = (code << 6) | (b & 0b0011_1111) as u32;
+        let b2 = self.next_byte().ok_or(ParseError::Eof)?;
+        if b1 < 0xE0 {
+            return if (0xC2..=0xDF).contains(&b1) && cont(b2) {
+                Ok(())
+            } else {
+                Err(ParseError::InvalidUtf8)
+            };
         }
-        // TODO: Reject surrogate halves?
-        // JSON requires UTF-8 validity (no overlong encodings, no surrogate halves).
-        // Right now, \xED\xA0\x80 (UTF-8 surrogate) will be accepted
-        // if (0xD800..=0xDFFF).contains(&code) {
-        //     return Err(ParseError::InvalidUtf8);
-        // }
-        char::from_u32(code).ok_or(ParseError::InvalidUtf8)
+
+        let b3 = self.next_byte().ok_or(ParseError::Eof)?;
+        if b1 < 0xF0 {
+            return if match b1 {
+                0xE0 => (0xA0..=0xBF).contains(&b2) && cont(b3),
+                0xED => (0x80..=0x9F).contains(&b2) && cont(b3), // no surrogates
+                0xE1..=0xEC | 0xEE..=0xEF => cont(b2) && cont(b3),
+                _ => false,
+            } {
+                Ok(())
+            } else {
+                Err(ParseError::InvalidUtf8)
+            };
+        }
+
+        let b4 = self.next_byte().ok_or(ParseError::Eof)?;
+        if match b1 {
+            0xF0 => (0x90..=0xBF).contains(&b2) && cont(b3) && cont(b4),
+            0xF4 => (0x80..=0x8F).contains(&b2) && cont(b3) && cont(b4),
+            0xF1..=0xF3 => cont(b2) && cont(b3) && cont(b4),
+            _ => false,
+        } {
+            Ok(())
+        } else {
+            Err(ParseError::InvalidUtf8)
+        }
+    }
+}
+
+const SPACES: &str = "                                                                 ";
+
+impl<'input> Parser<'input> {
+    fn write_indent(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        let n = self.indent * 2;
+        let full_chunks = n / SPACES.len();
+        let remainder = n % SPACES.len();
+        for _ in 0..full_chunks {
+            out.write_str(SPACES)?;
+        }
+        out.write_str(&SPACES[..remainder])?;
+        Ok(())
     }
 }
 
 #[inline]
-fn write_str(s: &str, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
-    write_start_color(out, color)?;
+fn write_ln(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_char('\n')
+}
+
+#[inline]
+fn write_empty_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m{}\x1b[0m")
+}
+
+#[inline]
+fn write_begin_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m{\x1b[0m\n")
+}
+
+#[inline]
+fn write_end_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m}\x1b[0m")
+}
+
+#[inline]
+fn write_value_sep(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m,\x1b[0m\n")
+}
+
+#[inline]
+fn write_name_sep(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m:\x1b[0m ")
+}
+
+#[inline]
+fn write_begin_arr(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m[\x1b[0m\n")
+}
+
+#[inline]
+fn write_end_arr(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;39m]\x1b[0m\n")
+}
+
+#[inline]
+fn write_key(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[1;34m")?;
     out.write_str(s)?;
     out.write_str("\x1b[0m")
 }
 
 #[inline]
-fn write_char(c: char, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
-    write_start_color(out, color)?;
-    out.write_char(c)?;
+fn write_value(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[0;32m")?;
+    out.write_str(s)?;
     out.write_str("\x1b[0m")
 }
 
 #[inline]
-fn writeln_char(c: char, out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
-    write_start_color(out, color)?;
-    out.write_char(c)?;
-    out.write_str("\x1b[0m\n")
+fn write_true(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[0;33mtrue\x1b[0m")
 }
 
 #[inline]
-fn writeln(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_char('\n')
+fn write_false(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[0;33mfalse\x1b[0m")
 }
 
 #[inline]
-fn write_start_color(out: &mut impl Write, color: Color) -> Result<(), fmt::Error> {
-    match color {
-        Color::Green => out.write_str("\x1b[0;32m"),
-        Color::Yellow => out.write_str("\x1b[0;33m"),
-        Color::Purple => out.write_str("\x1b[0;35m"),
-        Color::BoldBlue => out.write_str("\x1b[1;34m"),
-        Color::BoldGrey => out.write_str("\x1b[1;39m"),
-    }
+fn write_null(out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("null")
 }
 
-// #[inline]
-// fn write_nl(out: &mut impl Write) -> Result<(), fmt::Error> {
-//     out.write_char('\n')
-// }
-
+#[inline]
+fn write_number(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+    out.write_str("\x1b[0;35m")?;
+    out.write_str(s)?;
+    out.write_str("\x1b[0m")
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::Parser;
+    use crate::format::{BytePos, Parser};
 
     #[test]
     fn parse_number_ok() {
@@ -490,4 +552,75 @@ mod tests {
             assert!(result.is_err());
         }
     }
+
+    fn assert_against_std(bytes: &[u8], len: usize) {
+        // We pass the full buffer to the parser, with some trailing bytes
+        let mut parser = Parser::new(&bytes);
+        let ret = parser.next_utf8_char();
+
+        // We test against a buffer without trailing
+        match std::str::from_utf8(&bytes[..len]) {
+            Ok(str) => {
+                assert!(ret.is_ok());
+                assert_eq!(parser.pos.0, len);
+                let out = parser.slice_str_unchecked(BytePos(0), parser.pos);
+                assert_eq!(out, str);
+            }
+            Err(_) => {
+                assert!(ret.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn try_read_one_byte_to_utf8() {
+        // Iterate through all 1-byte UTF-8 bytes, even invalid
+        for b in 0x00..=0xFF {
+            let bytes = [b, b'x', b'x', b'x'];
+            assert_against_std(&bytes, 1);
+        }
+    }
+
+    #[test]
+    fn try_read_two_bytes_to_utf8() {
+        // Iterate through all UTF-8 2-bytes: C0..=DF 80..=BF
+        // It may contains invalid ones (overlong for instance).
+        for b1 in 0xC0..=0xDF {
+            for b2 in 0x80..=0xBF {
+                let bytes = [b1, b2, b'x', b'x', b'x'];
+                assert_against_std(&bytes, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn try_read_three_bytes_to_utf8() {
+        // Iterate through all UTF-8 3-bytes: E0..=EF 80..=BF 80..=BF
+        // It may contains invalid ones (overlong for instance).
+        for b1 in 0xF0..=0xF7 {
+            for b2 in 0x80..=0xBF {
+                for b3 in 0x80..=0xBF {
+                    let bytes = [b1, b2, b3, b'x', b'x', b'x'];
+                    assert_against_std(&bytes, 3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn try_read_four_bytes_to_utf8() {
+        // Iterate through all UTF-8 4-bytes: F0..=F7 80..=BF 80..=BF 80..=BF
+        // It may contains invalid ones (overlong for instance).
+        for b1 in 0xF0..=0xF7 {
+            for b2 in 0x80..=0xBF {
+                for b3 in 0x80..=0xBF {
+                    for b4 in 0x80..=0xBF {
+                        let bytes = [b1, b2, b3, b4, b'x', b'x', b'x'];
+                        assert_against_std(&bytes, 4);
+                    }
+                }
+            }
+        }
+    }
+
 }

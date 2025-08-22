@@ -1,6 +1,6 @@
-mod parser;
+mod format;
 
-use crate::parser::Parser;
+use crate::format::Parser;
 use serde_json::Value;
 use std::env::Args;
 use std::io::Read;
@@ -89,6 +89,6 @@ fn pretty_raw(bytes: &[u8]) -> String {
 fn pretty(bytes: &[u8]) -> String {
     let mut parser = Parser::new(bytes);
     let mut output = String::new();
-    parser.parse(&mut output).unwrap();
+    parser.format(&mut output).unwrap();
     output
 }
