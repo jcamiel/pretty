@@ -1,21 +1,25 @@
+use std::cmp::PartialEq;
 use std::fmt;
 use std::fmt::Write;
 
 /// A fast JSON formatter / pretty printer.
-/// This is a fast JSON formatter (x2 compare ti pretty print with serde). This parser process
-/// bytes and do not requires pre UTF-8 validation. UTF-8 validation is done on the fly, while parsing
-/// strings. THis implementation try to not allocate anything. It does not try to normalise, remove
-/// unnecessary escaping, it just format the actual input with spaces and (optionaly) color.
+/// This is a fast JSON formatter (x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
+/// This parser processes byte by byte and do not require pre UTF-8 validation. UTF-8 validation
+/// is done on the fly, while parsing strings. This implementation try to not allocate anything.
+/// It does not try to normalise, remove unnecessary escaping, it just formats the actual input
+/// with spaces and (optionally) color.
 pub struct Parser<'input> {
     input: &'input [u8],
     pos: BytePos,
     indent: usize,
+    /// Use color with ANSI escape code when prettifying.
+    color: Color,
 }
 
+/// A byte position in a bytes stream.
 #[derive(Debug, Copy, Clone)]
 struct BytePos(usize);
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ParseError {
     Eof,
@@ -25,7 +29,13 @@ pub enum ParseError {
     Fmt(fmt::Error),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Color {
+    NoColor,
+    AnsiCode,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum StringMode {
     Key,
     Value,
@@ -40,11 +50,12 @@ impl From<fmt::Error> for ParseError {
 }
 
 impl<'input> Parser<'input> {
-    pub fn new(input: &'input [u8]) -> Self {
+    pub fn new(input: &'input [u8], color: Color) -> Self {
         Parser {
             input,
             pos: BytePos(0),
             indent: 0,
+            color,
         }
     }
 
@@ -122,12 +133,12 @@ impl<'input> Parser<'input> {
         self.skip_whitespace();
         if self.peek_byte() == Some(b'}') {
             self.next_byte();
-            write_empty_obj(out)?;
+            self.write_empty_obj(out)?;
             return Ok(());
         }
 
         // Now, we have a non-empty object.
-        write_begin_obj(out)?;
+        self.write_begin_obj(out)?;
         self.indent += 1;
 
         let mut first = true;
@@ -136,9 +147,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b'}') {
                 self.next_byte();
                 self.indent -= 1;
-                write_ln(out)?;
+                self.write_ln(out)?;
                 self.write_indent(out)?;
-                write_end_obj(out)?;
+                self.write_end_obj(out)?;
                 return Ok(());
             }
 
@@ -147,7 +158,7 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                write_value_sep(out)?;
+                self.write_value_sep(out)?;
             }
 
             // Parse key
@@ -157,7 +168,7 @@ impl<'input> Parser<'input> {
             // Parse colon
             self.skip_whitespace();
             self.expect_byte(b':')?;
-            write_name_sep(out)?;
+            self.write_name_sep(out)?;
 
             // Parse value
             self.skip_whitespace();
@@ -170,7 +181,7 @@ impl<'input> Parser<'input> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
         // array = begin-array [ value *( value-separator value ) ] end-array
         self.expect_byte(b'[')?;
-        write_begin_arr(out)?;
+        self.write_begin_arr(out)?;
         self.indent += 1;
 
         let mut first = true;
@@ -179,9 +190,9 @@ impl<'input> Parser<'input> {
             if self.peek_byte() == Some(b']') {
                 self.next_byte();
                 self.indent -= 1;
-                write_ln(out)?;
+                self.write_ln(out)?;
                 self.write_indent(out)?;
-                write_end_arr(out)?;
+                self.write_end_arr(out)?;
                 return Ok(());
             }
 
@@ -190,7 +201,7 @@ impl<'input> Parser<'input> {
             } else {
                 self.expect_byte(b',')?;
                 self.skip_whitespace();
-                write_value_sep(out)?;
+                self.write_value_sep(out)?;
             }
 
             self.write_indent(out)?;
@@ -219,8 +230,8 @@ impl<'input> Parser<'input> {
                     // Flush plain segment before exit.
                     let string = self.slice_str_unchecked(start, self.pos);
                     match mode {
-                        StringMode::Key => write_key(string, out)?,
-                        StringMode::Value => write_value(string, out)?,
+                        StringMode::Key => self.write_key(string, out)?,
+                        StringMode::Value => self.write_value(string, out)?,
                     };
                     return Ok(());
                 }
@@ -256,7 +267,7 @@ impl<'input> Parser<'input> {
         for &b in b"true" {
             self.expect_byte(b)?;
         }
-        write_true(out)?;
+        self.write_true(out)?;
         Ok(())
     }
 
@@ -264,7 +275,7 @@ impl<'input> Parser<'input> {
         for &b in b"false" {
             self.expect_byte(b)?;
         }
-        write_false(out)?;
+        self.write_false(out)?;
         Ok(())
     }
 
@@ -272,7 +283,7 @@ impl<'input> Parser<'input> {
         for &b in b"null" {
             self.expect_byte(b)?;
         }
-        write_null(out)?;
+        self.write_null(out)?;
         Ok(())
     }
 
@@ -303,7 +314,7 @@ impl<'input> Parser<'input> {
 
         // Finally, write numbers
         let digits = self.slice_str_unchecked(start, self.pos);
-        write_number(digits, out)?;
+        self.write_number(digits, out)?;
 
         Ok(())
     }
@@ -420,6 +431,8 @@ impl<'input> Parser<'input> {
 
 const SPACES: &str = "                                                                 ";
 
+
+/// Methods to print on a [Write], with color, or not.
 impl<'input> Parser<'input> {
     fn write_indent(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
         let n = self.indent * 2;
@@ -431,87 +444,139 @@ impl<'input> Parser<'input> {
         out.write_str(&SPACES[..remainder])?;
         Ok(())
     }
-}
 
-#[inline]
-fn write_ln(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_char('\n')
-}
+    #[inline]
+    fn write_ln(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        out.write_char('\n')
+    }
 
-#[inline]
-fn write_empty_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m{}\x1b[0m")
-}
+    #[inline]
+    fn write_empty_obj(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m{}\x1b[0m")
+        } else {
+            out.write_str("{}")
+        }
+    }
 
-#[inline]
-fn write_begin_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m{\x1b[0m\n")
-}
+    #[inline]
+    fn write_begin_obj(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m{\x1b[0m\n")
+        } else {
+            out.write_str("{\n")
+        }
+    }
 
-#[inline]
-fn write_end_obj(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m}\x1b[0m")
-}
+    #[inline]
+    fn write_end_obj(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m}\x1b[0m")
+        } else {
+            out.write_char('}')
+        }
+    }
 
-#[inline]
-fn write_value_sep(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m,\x1b[0m\n")
-}
+    #[inline]
+    fn write_value_sep(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m,\x1b[0m\n")
+        } else {
+            out.write_str(",\n")
+        }
+    }
 
-#[inline]
-fn write_name_sep(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m:\x1b[0m ")
-}
+    #[inline]
+    fn write_name_sep(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m:\x1b[0m ")
+        } else {
+            out.write_str(": ")
+        }
+    }
 
-#[inline]
-fn write_begin_arr(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m[\x1b[0m\n")
-}
+    #[inline]
+    fn write_begin_arr(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m[\x1b[0m\n")
+        } else {
+            out.write_str("[\n")
+        }
+    }
 
-#[inline]
-fn write_end_arr(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;39m]\x1b[0m\n")
-}
+    #[inline]
+    fn write_end_arr(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;39m]\x1b[0m\n")
+        } else {
+            out.write_str("]\n")
+        }
+    }
 
-#[inline]
-fn write_key(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[1;34m")?;
-    out.write_str(s)?;
-    out.write_str("\x1b[0m")
-}
+    #[inline]
+    fn write_key(&self, s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[1;34m")?;
+            out.write_str(s)?;
+            out.write_str("\x1b[0m")
+        } else {
+            out.write_str(s)
+        }
+    }
 
-#[inline]
-fn write_value(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[0;32m")?;
-    out.write_str(s)?;
-    out.write_str("\x1b[0m")
-}
+    #[inline]
+    fn write_value(&self, s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[0;32m")?;
+            out.write_str(s)?;
+            out.write_str("\x1b[0m")
+        } else {
+            out.write_str(s)
+        }
+    }
 
-#[inline]
-fn write_true(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[0;33mtrue\x1b[0m")
-}
+    #[inline]
+    fn write_true(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[0;33mtrue\x1b[0m")
+        } else {
+            out.write_str("true")
+        }
+    }
 
-#[inline]
-fn write_false(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[0;33mfalse\x1b[0m")
-}
+    #[inline]
+    fn write_false(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[0;33mfalse\x1b[0m")
+        } else {
+            out.write_str("false")
+        }
+    }
 
-#[inline]
-fn write_null(out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("null")
-}
+    #[inline]
+    fn write_null(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("null")
+        } else {
+            out.write_str("null")
+        }
+    }
 
-#[inline]
-fn write_number(s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
-    out.write_str("\x1b[0;35m")?;
-    out.write_str(s)?;
-    out.write_str("\x1b[0m")
+    #[inline]
+    fn write_number(&self, s: &str, out: &mut impl Write) -> Result<(), fmt::Error> {
+        if self.color == Color::AnsiCode {
+            out.write_str("\x1b[0;35m")?;
+            out.write_str(s)?;
+            out.write_str("\x1b[0m")
+        } else {
+            out.write_str(s)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::format::{BytePos, Parser};
+    use crate::format::{BytePos, Color, Parser};
 
     #[test]
     fn parse_number_ok() {
@@ -535,7 +600,7 @@ mod tests {
             ("1.7b", "1.7"),
         ];
         for (input, expected) in datas {
-            let mut parser = Parser::new(input.as_bytes());
+            let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
             let mut out = String::new();
             parser.parse_number(&mut out).unwrap();
             assert_eq!(out, expected);
@@ -546,7 +611,7 @@ mod tests {
     fn parse_number_failed() {
         let datas = ["1.", "78980.a", "abc"];
         for input in datas {
-            let mut parser = Parser::new(input.as_bytes());
+            let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
             let mut out = String::new();
             let result = parser.parse_number(&mut out);
             assert!(result.is_err());
@@ -555,7 +620,7 @@ mod tests {
 
     fn assert_against_std(bytes: &[u8], len: usize) {
         // We pass the full buffer to the parser, with some trailing bytes
-        let mut parser = Parser::new(&bytes);
+        let mut parser = Parser::new(&bytes, Color::NoColor);
         let ret = parser.next_utf8_char();
 
         // We test against a buffer without trailing
@@ -622,5 +687,4 @@ mod tests {
             }
         }
     }
-
 }

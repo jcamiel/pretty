@@ -1,34 +1,65 @@
 mod format;
 
-use crate::format::Parser;
+use crate::format::{Color, Parser};
 use serde_json::Value;
 use std::env::Args;
 use std::io::Read;
 use std::{env, io};
 
 fn main() {
-    let (with_serde, iter_count) = parse_args(env::args()).unwrap();
+    let config = parse_args(env::args()).unwrap();
 
     let mut buffer = Vec::new();
     io::stdin().read_to_end(&mut buffer).unwrap();
 
-    let run = if with_serde { pretty_serde } else { pretty };
+    let run = if config.with_serde {
+        pretty_serde
+    } else {
+        pretty
+    };
 
-    for _ in 1..=iter_count {
-        let s = run(&buffer);
+    for _ in 1..=config.iter_count {
+        let s = run(&buffer, config.with_color);
         println!("{s}");
     }
 }
 
-fn parse_args(args: Args) -> Result<(bool, usize), String> {
+fn pretty_serde(bytes: &[u8], _color: bool) -> String {
+    let json = serde_json::from_slice::<Value>(bytes).unwrap();
+    serde_json::to_string_pretty(&json).unwrap()
+}
+
+fn pretty(bytes: &[u8], color: bool) -> String {
+    let color = if color {
+        Color::AnsiCode
+    } else {
+        Color::NoColor
+    };
+    let mut parser = Parser::new(bytes, color);
+    let mut output = String::new();
+    parser.format(&mut output).unwrap();
+    output
+}
+
+struct Config {
+    with_serde: bool,
+    with_color: bool,
+    iter_count: usize,
+}
+
+fn parse_args(args: Args) -> Result<Config, String> {
     let mut args = args.skip(1);
     let mut with_serde = false;
+    let mut with_color = true;
     let mut iter_count = 1;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--serde" => {
                 with_serde = true;
+            }
+            "--no-color" => {
+                with_color = false;
             }
             "--iter" => {
                 if let Some(value) = args.next() {
@@ -50,45 +81,9 @@ fn parse_args(args: Args) -> Result<(bool, usize), String> {
         }
     }
 
-    Ok((with_serde, iter_count))
-}
-
-fn pretty_serde(bytes: &[u8]) -> String {
-    let json = serde_json::from_slice::<Value>(bytes).unwrap();
-    serde_json::to_string_pretty(&json).unwrap()
-}
-
-#[allow(dead_code)]
-fn pretty_raw(bytes: &[u8]) -> String {
-    let mut json = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-
-    // Process complete 8-byte chunks
-    while i + 8 <= bytes.len() {
-        let chunk = &bytes[i..i + 8];
-
-        // Process all 8 bytes individually
-        for &byte in chunk {
-            json.push(byte);
-        }
-
-        i += 8;
-    }
-
-    // Handle remaining bytes (less than 8)
-    if i < bytes.len() {
-        for &byte in &bytes[i..] {
-            json.push(byte);
-        }
-    }
-
-    let s: String = unsafe { String::from_utf8_unchecked(json) };
-    s
-}
-
-fn pretty(bytes: &[u8]) -> String {
-    let mut parser = Parser::new(bytes);
-    let mut output = String::new();
-    parser.format(&mut output).unwrap();
-    output
+    Ok(Config {
+        with_serde,
+        with_color,
+        iter_count,
+    })
 }
