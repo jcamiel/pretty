@@ -36,12 +36,12 @@ jobs:
     - name: Build release
       run: cargo build --release
     
-    - name: Run benchmarks ({{matrix.os}})
+    - name: Run benchmarks (Unix)
       if: runner.os != 'Windows'
       shell: bash
-      run: benchmark.sh 
+      run: ./benchmark.sh
 
     - name: Run benchmarks (Windows)
       if: runner.os == 'Windows'
       shell: powershell
-      run: benchmark.ps1
+      run: .\benchmark.ps1
