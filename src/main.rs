@@ -3,7 +3,7 @@ mod format;
 use crate::format::{Color, Parser};
 use serde_json::Value;
 use std::env::Args;
-use std::{env, io};
+use std::env;
 
 fn main() {
     let config = match parse_args(env::args()) {
@@ -14,11 +14,13 @@ fn main() {
         }
     };
 
-    let mut buffer = Vec::new();
-    if let Err(err) = read_stdin_to_buffer(&mut buffer) {
-        eprintln!("Error reading from stdin: {}", err);
-        std::process::exit(1);
-    }
+    let buffer = match std::fs::read(&config.file_path) {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("Error reading file '{}': {}", config.file_path, err);
+            std::process::exit(1);
+        }
+    };
 
     let run = if config.with_serde {
         pretty_serde
@@ -49,56 +51,27 @@ fn pretty(bytes: &[u8], color: bool) -> String {
     output
 }
 
-fn read_stdin_to_buffer(buffer: &mut Vec<u8>) -> io::Result<usize> {
-    // On Windows, when reading large amounts of data from stdin through PowerShell piping,
-    // we might encounter issues with console buffer limitations. Use chunked reading
-    // to handle this more robustly.
-    #[cfg(windows)]
-    {
-        read_stdin_chunked(buffer)
-    }
-    #[cfg(not(windows))]
-    {
-        use std::io::Read;
-        io::stdin().read_to_end(buffer)
-    }
-}
-
-#[cfg(windows)]
-fn read_stdin_chunked(buffer: &mut Vec<u8>) -> io::Result<usize> {
-    use std::io::Read;
-    
-    // Use a moderate chunk size to avoid potential buffer issues on Windows
-    const CHUNK_SIZE: usize = 8192;
-    let mut chunk = vec![0u8; CHUNK_SIZE];
-    let mut total_read = 0;
-    
-    loop {
-        match io::stdin().read(&mut chunk) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                buffer.extend_from_slice(&chunk[..n]);
-                total_read += n;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    
-    Ok(total_read)
-}
 
 #[derive(Debug)]
 struct Config {
     with_serde: bool,
     with_color: bool,
     iter_count: usize,
+    file_path: String,
 }
 
 fn parse_args(args: Args) -> Result<Config, String> {
-    let mut args = args.skip(1);
+    parse_args_impl(args.skip(1))
+}
+
+fn parse_args_impl<I>(mut args: I) -> Result<Config, String>
+where
+    I: Iterator<Item = String>,
+{
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
+    let mut file_path = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -122,47 +95,70 @@ fn parse_args(args: Args) -> Result<Config, String> {
                 }
             }
             other => {
-                let err = format!("Unknown argument: {other}");
-                return Err(err);
+                if file_path.is_none() {
+                    file_path = Some(other.to_string());
+                } else {
+                    let err = format!("Unknown argument: {other}");
+                    return Err(err);
+                }
             }
         }
     }
+
+    let file_path = file_path.ok_or("Missing required argument: JSON file path")?;
 
     Ok(Config {
         with_serde,
         with_color,
         iter_count,
+        file_path,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Read};
+    #[test]
+    fn test_file_argument_required() {
+        use super::parse_args_impl;
+        
+        // Test that parse_args requires a file argument
+        let args = vec![];
+        let result = parse_args_impl(args.into_iter());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing required argument: JSON file path"));
+    }
 
     #[test]
-    fn test_chunked_reading_simulation() {
-        // Test that chunked reading works correctly with large data
-        let test_data = vec![42u8; 20000]; // 20KB of test data
-        let mut cursor = Cursor::new(test_data.clone());
-        let mut buffer = Vec::new();
+    fn test_parse_args_with_file() {
+        use super::parse_args_impl;
         
-        // Simulate our Windows chunked reading approach
-        const CHUNK_SIZE: usize = 8192;
-        let mut chunk = vec![0u8; CHUNK_SIZE];
-        let mut total_read = 0;
+        let args = vec!["test.json".to_string()];
+        let result = parse_args_impl(args.into_iter());
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.file_path, "test.json");
+        assert!(!config.with_serde);
+        assert!(config.with_color);
+        assert_eq!(config.iter_count, 1);
+    }
+
+    #[test]
+    fn test_parse_args_with_options() {
+        use super::parse_args_impl;
         
-        loop {
-            match cursor.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buffer.extend_from_slice(&chunk[..n]);
-                    total_read += n;
-                }
-                Err(_) => panic!("Read error"),
-            }
-        }
-        
-        assert_eq!(buffer, test_data);
-        assert_eq!(total_read, 20000);
+        let args = vec![
+            "--serde".to_string(),
+            "--no-color".to_string(),
+            "--iter".to_string(),
+            "5".to_string(),
+            "test.json".to_string(),
+        ];
+        let result = parse_args_impl(args.into_iter());
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.file_path, "test.json");
+        assert!(config.with_serde);
+        assert!(!config.with_color);
+        assert_eq!(config.iter_count, 5);
     }
 }
