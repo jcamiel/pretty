@@ -39,7 +39,7 @@ jobs:
     - name: Run benchmarks (Unix)
       if: runner.os != 'Windows'
       shell: bash
-      run: ./benchmark.sh
+      run: ./benchmark.sh 500
 
     - name: Run benchmarks (Windows)
       if: runner.os == 'Windows'
