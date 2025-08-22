@@ -4,6 +4,7 @@ use crate::format::{Color, Parser};
 use serde_json::Value;
 use std::env::Args;
 use std::env;
+use std::path::PathBuf;
 
 fn main() {
     let config = match parse_args(env::args()) {
@@ -17,7 +18,7 @@ fn main() {
     let buffer = match std::fs::read(&config.file_path) {
         Ok(data) => data,
         Err(err) => {
-            eprintln!("Error reading file '{}': {}", config.file_path, err);
+            eprintln!("Error reading file '{}': {}", config.file_path.display(), err);
             std::process::exit(1);
         }
     };
@@ -57,7 +58,7 @@ struct Config {
     with_serde: bool,
     with_color: bool,
     iter_count: usize,
-    file_path: String,
+    file_path: PathBuf,
 }
 
 fn parse_args(args: Args) -> Result<Config, String> {
@@ -71,7 +72,7 @@ where
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
-    let mut file_path = None;
+    let mut file_path: Option<PathBuf> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -96,7 +97,7 @@ where
             }
             other => {
                 if file_path.is_none() {
-                    file_path = Some(other.to_string());
+                    file_path = Some(PathBuf::from(other));
                 } else {
                     let err = format!("Unknown argument: {other}");
                     return Err(err);
@@ -131,12 +132,13 @@ mod tests {
     #[test]
     fn test_parse_args_with_file() {
         use super::parse_args_impl;
+        use std::path::PathBuf;
         
         let args = vec!["test.json".to_string()];
         let result = parse_args_impl(args.into_iter());
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert_eq!(config.file_path, "test.json");
+        assert_eq!(config.file_path, PathBuf::from("test.json"));
         assert!(!config.with_serde);
         assert!(config.with_color);
         assert_eq!(config.iter_count, 1);
@@ -145,6 +147,7 @@ mod tests {
     #[test]
     fn test_parse_args_with_options() {
         use super::parse_args_impl;
+        use std::path::PathBuf;
         
         let args = vec![
             "--serde".to_string(),
@@ -156,7 +159,7 @@ mod tests {
         let result = parse_args_impl(args.into_iter());
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert_eq!(config.file_path, "test.json");
+        assert_eq!(config.file_path, PathBuf::from("test.json"));
         assert!(config.with_serde);
         assert!(!config.with_color);
         assert_eq!(config.iter_count, 5);
