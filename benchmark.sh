@@ -1,4 +1,4 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 
 echo "pretty:"
 time cat 5mb.json | ./target/release/pretty --iter 500 > /dev/null
