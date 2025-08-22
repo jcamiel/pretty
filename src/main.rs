@@ -4,6 +4,7 @@ use crate::format::{Color, Parser};
 use serde_json::Value;
 use std::env::Args;
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 
 fn main() {
@@ -15,11 +16,27 @@ fn main() {
         }
     };
 
-    let buffer = match std::fs::read(&config.file_path) {
-        Ok(data) => data,
-        Err(err) => {
-            eprintln!("Error reading file '{}': {}", config.file_path.display(), err);
-            std::process::exit(1);
+    let buffer = match &config.file_path {
+        None => {
+            // Read from stdin
+            let mut buffer = Vec::new();
+            match std::io::stdin().read_to_end(&mut buffer) {
+                Ok(_) => buffer,
+                Err(err) => {
+                    eprintln!("Error reading from stdin: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(path) => {
+            // Read from file
+            match std::fs::read(path) {
+                Ok(data) => data,
+                Err(err) => {
+                    eprintln!("Error reading file '{}': {}", path.display(), err);
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
@@ -58,7 +75,7 @@ struct Config {
     with_serde: bool,
     with_color: bool,
     iter_count: usize,
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
 }
 
 fn print_usage() {
@@ -67,7 +84,7 @@ fn print_usage() {
     println!("A fast JSON pretty-printer");
     println!();
     println!("Arguments:");
-    println!("  <JSON_FILE>  Path to the JSON file to format");
+    println!("  <JSON_FILE>  Path to the JSON file to format (use '-' for stdin)");
     println!();
     println!("Options:");
     println!("  --serde       Use serde for JSON parsing");
@@ -95,7 +112,7 @@ fn parse_args(args: Args) -> Result<Config, String> {
     let mut with_serde = false;
     let mut with_color = true;
     let mut iter_count = 1;
-    let mut file_path: Option<PathBuf> = None;
+    let mut file_path: Option<Option<PathBuf>> = None;
     
     let mut args_iter = args.into_iter();
     while let Some(arg) = args_iter.next() {
@@ -121,7 +138,11 @@ fn parse_args(args: Args) -> Result<Config, String> {
             }
             other => {
                 if file_path.is_none() {
-                    file_path = Some(PathBuf::from(other));
+                    if other == "-" {
+                        file_path = Some(None);
+                    } else {
+                        file_path = Some(Some(PathBuf::from(other)));
+                    }
                 } else {
                     let err = format!("Unknown argument: {other}");
                     return Err(err);
