@@ -1,0 +1,155 @@
+name: Cross-Platform Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: Benchmark on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+    
+    - name: Cache cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build release
+      run: cargo build --release
+    
+    - name: Run benchmarks (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        echo "# Benchmark Results for ${{ matrix.os }}" >> results.md
+        echo "" >> results.md
+        echo "| Command | Real Time | User Time | Sys Time |" >> results.md
+        echo "|---------|-----------|-----------|----------|" >> results.md
+        
+        # Pretty with color
+        echo "Running: Pretty with color"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        echo "| Pretty with color | $REAL | $USER | $SYS |" >> results.md
+        
+        # Pretty no color  
+        echo "Running: Pretty no color"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --no-color --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        echo "| Pretty no color | $REAL | $USER | $SYS |" >> results.md
+        
+        # Pretty serde
+        echo "Running: Pretty serde"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --serde --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        echo "| Pretty serde | $REAL | $USER | $SYS |" >> results.md
+    
+    - name: Run benchmarks (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        "# Benchmark Results for ${{ matrix.os }}" | Out-File -FilePath results.md -Encoding UTF8
+        "" | Out-File -FilePath results.md -Append -Encoding UTF8
+        "| Command | Execution Time |" | Out-File -FilePath results.md -Append -Encoding UTF8
+        "|---------|----------------|" | Out-File -FilePath results.md -Append -Encoding UTF8
+        
+        # Pretty with color
+        Write-Host "Running: Pretty with color"
+        $time1 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --iter 100 | Out-Null }
+        "| Pretty with color | $($time1.TotalSeconds)s |" | Out-File -FilePath results.md -Append -Encoding UTF8
+        
+        # Pretty no color
+        Write-Host "Running: Pretty no color"
+        $time2 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --no-color --iter 100 | Out-Null }
+        "| Pretty no color | $($time2.TotalSeconds)s |" | Out-File -FilePath results.md -Append -Encoding UTF8
+        
+        # Pretty serde
+        Write-Host "Running: Pretty serde"
+        $time3 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --serde --iter 100 | Out-Null }
+        "| Pretty serde | $($time3.TotalSeconds)s |" | Out-File -FilePath results.md -Append -Encoding UTF8
+    
+    - name: Display results
+      shell: bash
+      run: |
+        echo "=========================="
+        echo "Benchmark Results for ${{ matrix.os }}"
+        echo "=========================="
+        cat results.md
+        echo "=========================="
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results-${{ matrix.os }}
+        path: results.md
+
+  collect-results:
+    name: Collect All Results
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: always()
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+    
+    - name: Combine results
+      run: |
+        echo "# Cross-Platform Benchmark Results" > combined-results.md
+        echo "" >> combined-results.md
+        echo "Results from running the following commands on each platform:" >> combined-results.md
+        echo "- \`cat 5mb.json | target/release/pretty --iter 100\`" >> combined-results.md
+        echo "- \`cat 5mb.json | target/release/pretty --no-color --iter 100\`" >> combined-results.md
+        echo "- \`cat 5mb.json | target/release/pretty --serde --iter 100\`" >> combined-results.md
+        echo "" >> combined-results.md
+        
+        for dir in benchmark-results-*; do
+          if [ -d "$dir" ]; then
+            echo "" >> combined-results.md
+            cat "$dir/results.md" >> combined-results.md
+            echo "" >> combined-results.md
+          fi
+        done
+    
+    - name: Display combined results
+      run: |
+        echo "========================================"
+        echo "COMBINED BENCHMARK RESULTS"
+        echo "========================================"
+        cat combined-results.md
+        echo "========================================"
+    
+    - name: Upload combined results
+      uses: actions/upload-artifact@v3
+      with:
+        name: combined-benchmark-results
+        path: combined-results.md
