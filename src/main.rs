@@ -61,8 +61,36 @@ struct Config {
     file_path: PathBuf,
 }
 
+fn print_usage() {
+    println!("Usage: pretty [OPTIONS] <JSON_FILE>");
+    println!();
+    println!("A fast JSON pretty-printer");
+    println!();
+    println!("Arguments:");
+    println!("  <JSON_FILE>  Path to the JSON file to format");
+    println!();
+    println!("Options:");
+    println!("  --serde       Use serde for JSON parsing");
+    println!("  --no-color    Disable colored output");
+    println!("  --iter <N>    Number of iterations to run [default: 1]");
+    println!("  -h, --help    Print this help message");
+}
+
 fn parse_args(args: Args) -> Result<Config, String> {
     let args: Vec<String> = args.skip(1).collect();
+    
+    // Handle help flags first
+    if args.is_empty() {
+        print_usage();
+        std::process::exit(0);
+    }
+    
+    for arg in &args {
+        if arg == "--help" || arg == "-h" {
+            print_usage();
+            std::process::exit(0);
+        }
+    }
     
     let mut with_serde = false;
     let mut with_color = true;
