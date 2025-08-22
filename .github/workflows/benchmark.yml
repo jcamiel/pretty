@@ -1,0 +1,119 @@
+name: Cross-Platform Benchmarks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: Benchmark on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build release
+      run: cargo build --release
+    
+    - name: Run benchmarks (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        # ANSI color codes
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        BLUE='\033[0;34m'
+        PURPLE='\033[0;35m'
+        CYAN='\033[0;36m'
+        WHITE='\033[1;37m'
+        NC='\033[0m' # No Color
+        BOLD='\033[1m'
+        
+        echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║${WHITE}${BOLD}                          Benchmark Results for ${{ matrix.os }}                           ${NC}${CYAN}║${NC}"
+        echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${CYAN}║${WHITE} Command                   │ Real Time  │ User Time  │ Sys Time   ${NC}${CYAN}║${NC}"
+        echo -e "${CYAN}╠═══════════════════════════┼════════════┼════════════┼════════════╣${NC}"
+        
+        # Pretty with color
+        echo -e "${YELLOW}🔄 Running: Pretty with color...${NC}"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        printf "${CYAN}║${GREEN} %-25s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}║${NC}\n" "🎨 Pretty with color" "$REAL" "$USER" "$SYS"
+        
+        # Pretty no color  
+        echo -e "${YELLOW}🔄 Running: Pretty no color...${NC}"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --no-color --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        printf "${CYAN}║${GREEN} %-25s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}║${NC}\n" "⚪ Pretty no color" "$REAL" "$USER" "$SYS"
+        
+        # Pretty serde
+        echo -e "${YELLOW}🔄 Running: Pretty serde...${NC}"
+        TIME_OUTPUT=$( (time cat 5mb.json | ./target/release/pretty --serde --iter 100 > /dev/null) 2>&1 )
+        REAL=$(echo "$TIME_OUTPUT" | grep real | awk '{print $2}')
+        USER=$(echo "$TIME_OUTPUT" | grep user | awk '{print $2}')
+        SYS=$(echo "$TIME_OUTPUT" | grep sys | awk '{print $2}')
+        printf "${CYAN}║${GREEN} %-25s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}│${WHITE} %-10s ${CYAN}║${NC}\n" "⚡ Pretty serde" "$REAL" "$USER" "$SYS"
+        
+        echo -e "${CYAN}╚═══════════════════════════┴════════════┴════════════┴════════════╝${NC}"
+        echo -e "${GREEN}✅ Benchmarks completed successfully!${NC}\n"
+    
+    - name: Run benchmarks (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        # PowerShell colored output
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║                          Benchmark Results for ${{ matrix.os }}                           ║" -ForegroundColor White -BackgroundColor DarkBlue
+        Write-Host "╠══════════════════════════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
+        Write-Host "║ Command                   │ Execution Time                                   ║" -ForegroundColor White
+        Write-Host "╠═══════════════════════════┼══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+        
+        # Pretty with color
+        Write-Host "🔄 Running: Pretty with color..." -ForegroundColor Yellow
+        $time1 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --iter 100 | Out-Null }
+        $timeFormatted1 = "{0:F3}s" -f $time1.TotalSeconds
+        Write-Host "║ 🎨 Pretty with color       │ $($timeFormatted1.PadRight(48)) ║" -ForegroundColor Green
+        
+        # Pretty no color
+        Write-Host "🔄 Running: Pretty no color..." -ForegroundColor Yellow
+        $time2 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --no-color --iter 100 | Out-Null }
+        $timeFormatted2 = "{0:F3}s" -f $time2.TotalSeconds
+        Write-Host "║ ⚪ Pretty no color         │ $($timeFormatted2.PadRight(48)) ║" -ForegroundColor Green
+        
+        # Pretty serde
+        Write-Host "🔄 Running: Pretty serde..." -ForegroundColor Yellow
+        $time3 = Measure-Command { Get-Content 5mb.json -Raw | .\target\release\pretty.exe --serde --iter 100 | Out-Null }
+        $timeFormatted3 = "{0:F3}s" -f $time3.TotalSeconds
+        Write-Host "║ ⚡ Pretty serde            │ $($timeFormatted3.PadRight(48)) ║" -ForegroundColor Green
+        
+        Write-Host "╚═══════════════════════════┴══════════════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "✅ Benchmarks completed successfully!" -ForegroundColor Green
+        Write-Host ""
