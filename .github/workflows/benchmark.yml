@@ -44,4 +44,4 @@ jobs:
     - name: Run benchmarks (Windows)
       if: runner.os == 'Windows'
       shell: powershell
-      run: .\benchmark.ps1 100
+      run: .\benchmark.ps1 10000 demo.json
