@@ -9,8 +9,11 @@ use std::fmt::{Formatter, Write};
 /// It does not try to normalise, remove unnecessary escaping, it just formats the actual input
 /// with spaces and (optionally) color.
 pub struct Parser<'input> {
+    /// The JSON input bytes to prettify.
     input: &'input [u8],
+    /// Cursor position in byte offset.
     pos: BytePos,
+    /// Current indentation level (this is maxed by `MAX_INDENT_LEVEL`)
     indent: usize,
     /// Use color with ANSI escape code when prettifying.
     color: Color,
@@ -20,9 +23,12 @@ pub struct Parser<'input> {
 #[derive(Debug, Copy, Clone)]
 pub struct BytePos(usize);
 
+/// Potential errors raised during formatting.
 #[derive(Debug)]
 pub enum ParseError {
+    /// Unexpected end of file.
     Eof,
+    ///
     InvalidByte(u8, BytePos),
     InvalidUtf8(Vec<u8>, BytePos),
     InvalidEscape(u8, BytePos),
@@ -108,7 +114,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    /// Format and prettify the JSON
+    /// Format and colorize the JSON input bytes.
     pub fn format(&mut self, out: &mut impl Write) -> ParseResult<()> {
         self.skip_whitespace();
         self.parse_value(out)?;
