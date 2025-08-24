@@ -28,9 +28,9 @@ pub struct BytePos(usize);
 pub enum ParseError {
     /// Unexpected end of file.
     Eof,
-    ///
     InvalidByte(u8, BytePos),
-    InvalidUtf8(Vec<u8>, BytePos),
+    /// The next bytes are not a valid UTF-8 sequence.
+    InvalidUtf8([u8; 4], usize, BytePos),
     InvalidEscape(u8, BytePos),
     Fmt(fmt::Error),
 }
@@ -42,18 +42,14 @@ impl fmt::Display for ParseError {
             ParseError::InvalidByte(byte, pos) => {
                 write!(f, "invalid byte <{byte:02x?}> at offset {}", pos.0)
             }
-            ParseError::InvalidUtf8(bytes, pos) => {
+            ParseError::InvalidUtf8(bytes, len, pos) => {
                 let hex = bytes
                     .iter()
+                    .take(*len)
                     .map(|b| format!("{:02x}", b))
                     .collect::<Vec<_>>()
                     .join(" ");
-                write!(
-                    f,
-                    "invalid {} UTF-8 bytes <{hex}> at offset {}",
-                    bytes.len(),
-                    pos.0
-                )
+                write!(f, "invalid {} UTF-8 bytes <{hex}> at offset {}", len, pos.0)
             }
             ParseError::InvalidEscape(byte, pos) => {
                 write!(f, "invalid escaped byte <{byte:02x?}> at offset {}", pos.0)
@@ -446,7 +442,7 @@ impl<'input> Parser<'input> {
             return if (0xC2..=0xDF).contains(&b1) && cont(b2) {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8(vec![b1, b2], start_pos))
+                Err(ParseError::InvalidUtf8([b1, b2, 0, 0], 2, start_pos))
             };
         }
 
@@ -460,7 +456,7 @@ impl<'input> Parser<'input> {
             } {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8(vec![b1, b2, b3], self.pos))
+                Err(ParseError::InvalidUtf8([b1, b2, b3, 0], 3, self.pos))
             };
         }
 
@@ -473,7 +469,7 @@ impl<'input> Parser<'input> {
         } {
             Ok(())
         } else {
-            Err(ParseError::InvalidUtf8(vec![b1, b2, b3, b4], self.pos))
+            Err(ParseError::InvalidUtf8([b1, b2, b3, b4], 4, self.pos))
         }
     }
 }
