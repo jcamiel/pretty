@@ -1,15 +1,14 @@
-use crate::format::ParseError::MaxIndentLevel;
 use std::cmp::PartialEq;
 use std::fmt;
-use std::fmt::{Formatter, Write};
+use std::fmt::Write;
 
 /// A fast JSON formatter / pretty printer.
 /// This is a fast JSON formatter (x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
-/// This parser processes byte by byte and do not require pre UTF-8 validation. UTF-8 validation
-/// is done on the fly, while parsing strings. This implementation try to not allocate anything.
-/// It does not try to normalise, remove unnecessary escaping, it just formats the actual input
-/// with spaces and (optionally) color.
-pub struct Parser<'input> {
+/// This formatter parses and formats JSON input byte by byte and do not require pre UTF-8 validation.
+/// UTF-8 validation is done in-place, on the fly, while parsing strings. This implementation try to not allocate
+/// anything. It does not try to normalise, remove unnecessary escaping, it just formats the actual input
+/// with spaces, newlines and (optionally) color.
+pub struct Formatter<'input> {
     /// The JSON input bytes to prettify.
     input: &'input [u8],
     /// Cursor position in byte offset.
@@ -29,26 +28,28 @@ pub struct BytePos(usize);
 
 /// Potential errors raised during formatting.
 #[derive(Debug)]
-pub enum ParseError {
+pub enum FormatError {
     /// Unexpected end of file.
     Eof,
+    /// Invalid byte at this position.
     InvalidByte(u8, BytePos),
     /// The next bytes are not a valid UTF-8 sequence.
     InvalidUtf8([u8; 4], usize, BytePos),
+    /// Invalid escaped byte at this position.
     InvalidEscape(u8, BytePos),
     /// The maximum indent level has been reached.
     MaxIndentLevel(usize, BytePos),
     Fmt(fmt::Error),
 }
 
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for FormatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::Eof => write!(f, "unexpected end of file"),
-            ParseError::InvalidByte(byte, pos) => {
+            FormatError::Eof => write!(f, "unexpected end of file"),
+            FormatError::InvalidByte(byte, pos) => {
                 write!(f, "invalid byte <{byte:02x?}> at offset {}", pos.0)
             }
-            ParseError::InvalidUtf8(bytes, len, pos) => {
+            FormatError::InvalidUtf8(bytes, len, pos) => {
                 let hex = bytes
                     .iter()
                     .take(*len)
@@ -57,20 +58,20 @@ impl fmt::Display for ParseError {
                     .join(" ");
                 write!(f, "invalid {} UTF-8 bytes <{hex}> at offset {}", len, pos.0)
             }
-            ParseError::InvalidEscape(byte, pos) => {
+            FormatError::InvalidEscape(byte, pos) => {
                 write!(f, "invalid escaped byte <{byte:02x?}> at offset {}", pos.0)
             }
-            ParseError::MaxIndentLevel(level, pos) => {
+            FormatError::MaxIndentLevel(level, pos) => {
                 write!(f, "maximum indent level {} at offset {}", level, pos.0)
             }
-            ParseError::Fmt(error) => write!(f, "error writing {error}"),
+            FormatError::Fmt(error) => write!(f, "error writing {error}"),
         }
     }
 }
 
-impl From<fmt::Error> for ParseError {
+impl From<fmt::Error> for FormatError {
     fn from(e: fmt::Error) -> Self {
-        ParseError::Fmt(e)
+        FormatError::Fmt(e)
     }
 }
 
@@ -86,11 +87,11 @@ enum StringMode {
     Value,
 }
 
-type ParseResult<T> = Result<T, ParseError>;
+type FormatResult<T> = Result<T, FormatError>;
 
-impl<'input> Parser<'input> {
+impl<'input> Formatter<'input> {
     pub fn new(input: &'input [u8], color: Color) -> Self {
-        Parser {
+        Formatter {
             input,
             pos: BytePos(0),
             level: 0,
@@ -111,17 +112,17 @@ impl<'input> Parser<'input> {
     }
 
     #[inline]
-    fn expect_byte(&mut self, expected: u8) -> ParseResult<()> {
+    fn expect_byte(&mut self, expected: u8) -> FormatResult<()> {
         match self.next_byte() {
             Some(b) if b == expected => Ok(()),
-            Some(b) => Err(ParseError::InvalidByte(b, BytePos(self.pos.0 - 1))),
-            None => Err(ParseError::Eof),
+            Some(b) => Err(FormatError::InvalidByte(b, BytePos(self.pos.0 - 1))),
+            None => Err(FormatError::Eof),
         }
     }
 
-    fn inc_level(&mut self) -> ParseResult<()> {
+    fn inc_level(&mut self) -> FormatResult<()> {
         if self.level >= MAX_INDENT_LEVEL {
-            return Err(MaxIndentLevel(self.level, self.pos));
+            return Err(FormatError::MaxIndentLevel(self.level, self.pos));
         }
         self.level += 1;
         Ok(())
@@ -133,7 +134,7 @@ impl<'input> Parser<'input> {
 
 
     /// Formats and colorize the JSON input bytes.
-    pub fn format(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    pub fn format(&mut self, out: &mut impl Write) -> FormatResult<()> {
         self.skip_start_bom();
 
         self.skip_whitespace();
@@ -142,7 +143,7 @@ impl<'input> Parser<'input> {
 
         // Have we completely consumed our payload?
         if let Some(b) = self.peek_byte() {
-            Err(ParseError::InvalidByte(b, self.pos))
+            Err(FormatError::InvalidByte(b, self.pos))
         } else {
             Ok(())
         }
@@ -166,7 +167,7 @@ impl<'input> Parser<'input> {
     }
 
     /// Value
-    fn parse_value(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_value(&mut self, out: &mut impl Write) -> FormatResult<()> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-3>:
         //
         // value = false / null / true / object / array / number / string
@@ -181,13 +182,13 @@ impl<'input> Parser<'input> {
             Some(b't') => self.parse_true(out),
             Some(b'f') => self.parse_false(out),
             Some(b'n') => self.parse_null(out),
-            Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
-            None => Err(ParseError::Eof),
+            Some(b) => Err(FormatError::InvalidByte(b, self.pos)),
+            None => Err(FormatError::Eof),
         }
     }
 
     /// Object
-    fn parse_object(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_object(&mut self, out: &mut impl Write) -> FormatResult<()> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
         // object = begin-object [ member *( value-separator member ) ]
         // end-object
@@ -242,7 +243,7 @@ impl<'input> Parser<'input> {
     }
 
     /// Array
-    fn parse_array(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_array(&mut self, out: &mut impl Write) -> FormatResult<()> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-4>:
         // array = begin-array [ value *( value-separator value ) ] end-array
         self.expect_byte(b'[')?;
@@ -291,7 +292,7 @@ impl<'input> Parser<'input> {
     }
 
     /// String (preserves escapes)
-    fn parse_string(&mut self, out: &mut impl Write, mode: StringMode) -> ParseResult<()> {
+    fn parse_string(&mut self, out: &mut impl Write, mode: StringMode) -> FormatResult<()> {
         // From <https://datatracker.ietf.org/doc/html/rfc7159#section-8>
 
         let start = self.pos;
@@ -317,31 +318,31 @@ impl<'input> Parser<'input> {
                         Some(b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') => {}
                         Some(b'u') => {
                             for _ in 0..4 {
-                                let hex = self.next_byte().ok_or(ParseError::Eof)?;
+                                let hex = self.next_byte().ok_or(FormatError::Eof)?;
                                 if !(hex as char).is_ascii_hexdigit() {
-                                    return Err(ParseError::InvalidByte(
+                                    return Err(FormatError::InvalidByte(
                                         hex,
                                         BytePos(self.pos.0 - 1),
                                     ));
                                 }
                             }
                         }
-                        Some(b) => return Err(ParseError::InvalidEscape(b, self.pos)),
-                        None => return Err(ParseError::Eof),
+                        Some(b) => return Err(FormatError::InvalidEscape(b, self.pos)),
+                        None => return Err(FormatError::Eof),
                     }
                 }
-                0x00..=0x1F => return Err(ParseError::InvalidByte(b, self.pos)),
+                0x00..=0x1F => return Err(FormatError::InvalidByte(b, self.pos)),
                 _ => {
                     // Decode valid UTF-8 char
                     self.next_utf8_char()?;
                 }
             }
         }
-        Err(ParseError::Eof)
+        Err(FormatError::Eof)
     }
 
     /// Literals
-    fn parse_true(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_true(&mut self, out: &mut impl Write) -> FormatResult<()> {
         for &b in b"true" {
             self.expect_byte(b)?;
         }
@@ -349,7 +350,7 @@ impl<'input> Parser<'input> {
         Ok(())
     }
 
-    fn parse_false(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_false(&mut self, out: &mut impl Write) -> FormatResult<()> {
         for &b in b"false" {
             self.expect_byte(b)?;
         }
@@ -357,7 +358,7 @@ impl<'input> Parser<'input> {
         Ok(())
     }
 
-    fn parse_null(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_null(&mut self, out: &mut impl Write) -> FormatResult<()> {
         for &b in b"null" {
             self.expect_byte(b)?;
         }
@@ -366,7 +367,7 @@ impl<'input> Parser<'input> {
     }
 
     /// Parse a JSON number.
-    fn parse_number(&mut self, out: &mut impl Write) -> ParseResult<()> {
+    fn parse_number(&mut self, out: &mut impl Write) -> FormatResult<()> {
         // From the spec <https://datatracker.ietf.org/doc/html/rfc7159#section-6>:
         //
         // number = [ minus ] int [ frac ] [ exp ]
@@ -397,7 +398,7 @@ impl<'input> Parser<'input> {
         Ok(())
     }
 
-    fn parse_integer(&mut self) -> ParseResult<()> {
+    fn parse_integer(&mut self) -> FormatResult<()> {
         match self.peek_byte() {
             Some(b'0') => {
                 self.next_byte();
@@ -411,12 +412,12 @@ impl<'input> Parser<'input> {
                 }
                 Ok(())
             }
-            Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
-            None => Err(ParseError::Eof),
+            Some(b) => Err(FormatError::InvalidByte(b, self.pos)),
+            None => Err(FormatError::Eof),
         }
     }
 
-    fn parse_fraction(&mut self) -> ParseResult<()> {
+    fn parse_fraction(&mut self) -> FormatResult<()> {
         if self.peek_byte() == Some(b'.') {
             self.next_byte();
             // 1 or more digits
@@ -428,14 +429,14 @@ impl<'input> Parser<'input> {
                     }
                     Ok(())
                 }
-                Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
-                None => Err(ParseError::Eof),
+                Some(b) => Err(FormatError::InvalidByte(b, self.pos)),
+                None => Err(FormatError::Eof),
             }?
         }
         Ok(())
     }
 
-    fn parse_exponent(&mut self) -> ParseResult<()> {
+    fn parse_exponent(&mut self) -> FormatResult<()> {
         match self.peek_byte() {
             Some(b'e' | b'E') => {
                 self.next_byte();
@@ -450,8 +451,8 @@ impl<'input> Parser<'input> {
                         }
                         Ok(())
                     }
-                    Some(b) => Err(ParseError::InvalidByte(b, self.pos)),
-                    None => Err(ParseError::Eof),
+                    Some(b) => Err(FormatError::InvalidByte(b, self.pos)),
+                    None => Err(FormatError::Eof),
                 }
             }
             _ => Ok(()),
@@ -459,7 +460,7 @@ impl<'input> Parser<'input> {
     }
 
     // -------- UTF-8 decoder --------
-    fn next_utf8_char(&mut self) -> ParseResult<()> {
+    fn next_utf8_char(&mut self) -> FormatResult<()> {
         #[inline(always)]
         fn cont(b: u8) -> bool {
             (b & 0xC0) == 0x80
@@ -467,21 +468,21 @@ impl<'input> Parser<'input> {
 
         let start_pos = self.pos;
 
-        let b1 = self.next_byte().ok_or(ParseError::Eof)?;
+        let b1 = self.next_byte().ok_or(FormatError::Eof)?;
         if b1 < 0x80 {
             return Ok(());
         }
 
-        let b2 = self.next_byte().ok_or(ParseError::Eof)?;
+        let b2 = self.next_byte().ok_or(FormatError::Eof)?;
         if b1 < 0xE0 {
             return if (0xC2..=0xDF).contains(&b1) && cont(b2) {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8([b1, b2, 0, 0], 2, start_pos))
+                Err(FormatError::InvalidUtf8([b1, b2, 0, 0], 2, start_pos))
             };
         }
 
-        let b3 = self.next_byte().ok_or(ParseError::Eof)?;
+        let b3 = self.next_byte().ok_or(FormatError::Eof)?;
         if b1 < 0xF0 {
             return if match b1 {
                 0xE0 => (0xA0..=0xBF).contains(&b2) && cont(b3),
@@ -491,11 +492,11 @@ impl<'input> Parser<'input> {
             } {
                 Ok(())
             } else {
-                Err(ParseError::InvalidUtf8([b1, b2, b3, 0], 3, self.pos))
+                Err(FormatError::InvalidUtf8([b1, b2, b3, 0], 3, self.pos))
             };
         }
 
-        let b4 = self.next_byte().ok_or(ParseError::Eof)?;
+        let b4 = self.next_byte().ok_or(FormatError::Eof)?;
         if match b1 {
             0xF0 => (0x90..=0xBF).contains(&b2) && cont(b3) && cont(b4),
             0xF4 => (0x80..=0x8F).contains(&b2) && cont(b3) && cont(b4),
@@ -504,7 +505,7 @@ impl<'input> Parser<'input> {
         } {
             Ok(())
         } else {
-            Err(ParseError::InvalidUtf8([b1, b2, b3, b4], 4, self.pos))
+            Err(FormatError::InvalidUtf8([b1, b2, b3, b4], 4, self.pos))
         }
     }
 }
@@ -512,7 +513,7 @@ impl<'input> Parser<'input> {
 const SPACES: &str = "                                                                 ";
 
 /// Methods to print on a [Write], with color, or not.
-impl<'input> Parser<'input> {
+impl<'input> Formatter<'input> {
     fn write_indent(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
         let n = self.level * 2;
         let full_chunks = n / SPACES.len();
@@ -664,7 +665,7 @@ impl<'input> Parser<'input> {
 
 #[cfg(test)]
 mod tests {
-    use crate::format::{BytePos, Color, Parser};
+    use crate::format::{BytePos, Color, Formatter};
 
     #[test]
     fn parse_number_ok() {
@@ -688,9 +689,9 @@ mod tests {
             ("1.7b", "1.7"),
         ];
         for (input, expected) in datas {
-            let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
+            let mut formatter = Formatter::new(input.as_bytes(), Color::NoColor);
             let mut out = String::new();
-            parser.parse_number(&mut out).unwrap();
+            formatter.parse_number(&mut out).unwrap();
             assert_eq!(out, expected);
         }
     }
@@ -699,24 +700,24 @@ mod tests {
     fn parse_number_failed() {
         let datas = ["1.", "78980.a", "abc"];
         for input in datas {
-            let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
+            let mut formatter = Formatter::new(input.as_bytes(), Color::NoColor);
             let mut out = String::new();
-            let result = parser.parse_number(&mut out);
+            let result = formatter.parse_number(&mut out);
             assert!(result.is_err());
         }
     }
 
     fn assert_against_std(bytes: &[u8], len: usize) {
         // We pass the full buffer to the parser, with some trailing bytes
-        let mut parser = Parser::new(&bytes, Color::NoColor);
-        let ret = parser.next_utf8_char();
+        let mut formatter = Formatter::new(&bytes, Color::NoColor);
+        let ret = formatter.next_utf8_char();
 
         // We test against a buffer without trailing
         match std::str::from_utf8(&bytes[..len]) {
             Ok(str) => {
                 assert!(ret.is_ok());
-                assert_eq!(parser.pos.0, len);
-                let out = parser.slice_str_unchecked(BytePos(0), parser.pos);
+                assert_eq!(formatter.pos.0, len);
+                let out = formatter.slice_str_unchecked(BytePos(0), formatter.pos);
                 assert_eq!(out, str);
             }
             Err(_) => {
@@ -779,9 +780,9 @@ mod tests {
     #[test]
     fn format_demo_string() {
         let input = r#"{"strings":{"english":"Hello, world!","chinese":"你好，世界","japanese":"こんにちは世界","korean":"안녕하세요 세계","arabic":"مرحبا بالعالم","hindi":"नमस्ते दुनिया","russian":"Привет, мир","greek":"Γειά σου Κόσμε","hebrew":"שלום עולם","accented":"Curaçao, naïve, façade, jalapeño"},"numbers":{"zero":0,"positive_int":42,"negative_int":-42,"large_int":1234567890123456789,"small_float":0.000123,"negative_float":-3.14159,"large_float":1.7976931348623157e308,"smallest_float":5e-324,"sci_notation_positive":6.022e23,"sci_notation_negative":-2.99792458e8},"booleans":{"isActive":true,"isDeleted":false},"emojis":{"happy":"😀","sad":"😢","fire":"🔥","rocket":"🚀","earth":"🌍","heart":"❤️","multi":"👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"},"nothing":null}"#;
-        let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
+        let mut formatter = Formatter::new(input.as_bytes(), Color::NoColor);
         let mut out = String::new();
-        parser.format(&mut out).unwrap();
+        formatter.format(&mut out).unwrap();
         assert_eq!(out, r#"{
   "strings": {
     "english": "Hello, world!",

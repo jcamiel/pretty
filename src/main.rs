@@ -1,6 +1,6 @@
 mod format;
 
-use crate::format::{Color, Parser};
+use crate::format::{Color, Formatter};
 use serde_json::Value;
 use std::env;
 use std::env::Args;
@@ -68,7 +68,7 @@ fn pretty(bytes: &[u8], color: bool) -> Result<String, String> {
     } else {
         Color::NoColor
     };
-    let mut parser = Parser::new(bytes, color);
+    let mut parser = Formatter::new(bytes, color);
     let mut output = String::new();
     parser.format(&mut output).map_err(|err| err.to_string())?;
     Ok(output)
