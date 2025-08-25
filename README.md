@@ -80,5 +80,6 @@ target/release/pretty --iter 5000 5mb.json  33.77s user 2.57s system 99% cpu 36.
 - [ ] Tests unit on strings
 - [ ] JSON parsing suite
 - [x] Add limit on nesting
-- [ ] Remove BOM
+- [x] Remove BOM
 - [x] use `[]` instead of `Vec` in `InvalidUtf8`
+- [ ] manage trailing new line

@@ -132,8 +132,10 @@ impl<'input> Parser<'input> {
     }
 
 
-    /// Format and colorize the JSON input bytes.
+    /// Formats and colorize the JSON input bytes.
     pub fn format(&mut self, out: &mut impl Write) -> ParseResult<()> {
+        self.skip_start_bom();
+
         self.skip_whitespace();
         self.parse_value(out)?;
         self.skip_whitespace();
@@ -143,6 +145,17 @@ impl<'input> Parser<'input> {
             Err(ParseError::InvalidByte(b, self.pos))
         } else {
             Ok(())
+        }
+    }
+
+    /// Skips BOM (Byte Order Mark) at the start of the read buffer.
+    fn skip_start_bom(&mut self) {
+        debug_assert!(self.pos.0 == 0);
+        if self.input.len() < 3 {
+            return;
+        }
+        if self.input[0] == 0xEF && self.input[1] == 0xBB && self.input[2] == 0xBF {
+            self.pos.0 = 3;
         }
     }
 
@@ -761,5 +774,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn format_demo_string() {
+        let input = r#"{"strings":{"english":"Hello, world!","chinese":"你好，世界","japanese":"こんにちは世界","korean":"안녕하세요 세계","arabic":"مرحبا بالعالم","hindi":"नमस्ते दुनिया","russian":"Привет, мир","greek":"Γειά σου Κόσμε","hebrew":"שלום עולם","accented":"Curaçao, naïve, façade, jalapeño"},"numbers":{"zero":0,"positive_int":42,"negative_int":-42,"large_int":1234567890123456789,"small_float":0.000123,"negative_float":-3.14159,"large_float":1.7976931348623157e308,"smallest_float":5e-324,"sci_notation_positive":6.022e23,"sci_notation_negative":-2.99792458e8},"booleans":{"isActive":true,"isDeleted":false},"emojis":{"happy":"😀","sad":"😢","fire":"🔥","rocket":"🚀","earth":"🌍","heart":"❤️","multi":"👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"},"nothing":null}"#;
+        let mut parser = Parser::new(input.as_bytes(), Color::NoColor);
+        let mut out = String::new();
+        parser.format(&mut out).unwrap();
+        assert_eq!(out, r#"{
+  "strings": {
+    "english": "Hello, world!",
+    "chinese": "你好，世界",
+    "japanese": "こんにちは世界",
+    "korean": "안녕하세요 세계",
+    "arabic": "مرحبا بالعالم",
+    "hindi": "नमस्ते दुनिया",
+    "russian": "Привет, мир",
+    "greek": "Γειά σου Κόσμε",
+    "hebrew": "שלום עולם",
+    "accented": "Curaçao, naïve, façade, jalapeño"
+  },
+  "numbers": {
+    "zero": 0,
+    "positive_int": 42,
+    "negative_int": -42,
+    "large_int": 1234567890123456789,
+    "small_float": 0.000123,
+    "negative_float": -3.14159,
+    "large_float": 1.7976931348623157e308,
+    "smallest_float": 5e-324,
+    "sci_notation_positive": 6.022e23,
+    "sci_notation_negative": -2.99792458e8
+  },
+  "booleans": {
+    "isActive": true,
+    "isDeleted": false
+  },
+  "emojis": {
+    "happy": "😀",
+    "sad": "😢",
+    "fire": "🔥",
+    "rocket": "🚀",
+    "earth": "🌍",
+    "heart": "❤️",
+    "multi": "👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"
+  },
+  "nothing": null
+}"#)
     }
 }
