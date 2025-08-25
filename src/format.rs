@@ -1,3 +1,4 @@
+use crate::format::ParseError::MaxIndentLevel;
 use std::cmp::PartialEq;
 use std::fmt;
 use std::fmt::{Formatter, Write};
@@ -14,10 +15,13 @@ pub struct Parser<'input> {
     /// Cursor position in byte offset.
     pos: BytePos,
     /// Current indentation level (this is maxed by `MAX_INDENT_LEVEL`)
-    indent: usize,
+    level: usize,
     /// Use color with ANSI escape code when prettifying.
     color: Color,
 }
+
+/// The maximum indentation level supported before errors.
+const MAX_INDENT_LEVEL: usize = 100;
 
 /// A byte position in a bytes stream.
 #[derive(Debug, Copy, Clone)]
@@ -32,6 +36,8 @@ pub enum ParseError {
     /// The next bytes are not a valid UTF-8 sequence.
     InvalidUtf8([u8; 4], usize, BytePos),
     InvalidEscape(u8, BytePos),
+    /// The maximum indent level has been reached.
+    MaxIndentLevel(usize, BytePos),
     Fmt(fmt::Error),
 }
 
@@ -54,8 +60,17 @@ impl fmt::Display for ParseError {
             ParseError::InvalidEscape(byte, pos) => {
                 write!(f, "invalid escaped byte <{byte:02x?}> at offset {}", pos.0)
             }
+            ParseError::MaxIndentLevel(level, pos) => {
+                write!(f, "maximum indent level {} at offset {}", level, pos.0)
+            }
             ParseError::Fmt(error) => write!(f, "error writing {error}"),
         }
+    }
+}
+
+impl From<fmt::Error> for ParseError {
+    fn from(e: fmt::Error) -> Self {
+        ParseError::Fmt(e)
     }
 }
 
@@ -73,18 +88,12 @@ enum StringMode {
 
 type ParseResult<T> = Result<T, ParseError>;
 
-impl From<fmt::Error> for ParseError {
-    fn from(e: fmt::Error) -> Self {
-        ParseError::Fmt(e)
-    }
-}
-
 impl<'input> Parser<'input> {
     pub fn new(input: &'input [u8], color: Color) -> Self {
         Parser {
             input,
             pos: BytePos(0),
-            indent: 0,
+            level: 0,
             color,
         }
     }
@@ -109,6 +118,19 @@ impl<'input> Parser<'input> {
             None => Err(ParseError::Eof),
         }
     }
+
+    fn inc_level(&mut self) -> ParseResult<()> {
+        if self.level >= MAX_INDENT_LEVEL {
+            return Err(MaxIndentLevel(self.level, self.pos));
+        }
+        self.level += 1;
+        Ok(())
+    }
+
+    fn dec_level(&mut self) {
+        self.level -= 1;
+    }
+
 
     /// Format and colorize the JSON input bytes.
     pub fn format(&mut self, out: &mut impl Write) -> ParseResult<()> {
@@ -169,14 +191,14 @@ impl<'input> Parser<'input> {
 
         // Now, we have a non-empty object.
         self.write_begin_obj(out)?;
-        self.indent += 1;
+        self.inc_level()?;
 
         let mut first = true;
         loop {
             self.skip_whitespace();
             if self.peek_byte() == Some(b'}') {
                 self.next_byte();
-                self.indent -= 1;
+                self.dec_level();
                 self.write_ln(out)?;
                 self.write_indent(out)?;
                 self.write_end_obj(out)?;
@@ -222,14 +244,14 @@ impl<'input> Parser<'input> {
 
         // Now, we have a non-empty array.
         self.write_begin_arr(out)?;
-        self.indent += 1;
+        self.inc_level()?;
 
         let mut first = true;
         loop {
             self.skip_whitespace();
             if self.peek_byte() == Some(b']') {
                 self.next_byte();
-                self.indent -= 1;
+                self.dec_level();
                 self.write_ln(out)?;
                 self.write_indent(out)?;
                 self.write_end_arr(out)?;
@@ -479,7 +501,7 @@ const SPACES: &str = "                                                          
 /// Methods to print on a [Write], with color, or not.
 impl<'input> Parser<'input> {
     fn write_indent(&self, out: &mut impl Write) -> Result<(), fmt::Error> {
-        let n = self.indent * 2;
+        let n = self.level * 2;
         let full_chunks = n / SPACES.len();
         let remainder = n % SPACES.len();
         for _ in 0..full_chunks {
