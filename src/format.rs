@@ -2,7 +2,7 @@ use std::cmp::PartialEq;
 use std::fmt;
 use std::fmt::Write;
 
-/// A fast JSON formatter / pretty printer.
+/// A fast zero dependency JSON formatter / pretty printer.
 /// This is a fast JSON formatter (up to x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
 /// This formatter parses and formats JSON input byte by byte and do not require pre UTF-8 validation.
 /// UTF-8 validation is done in-place, on the fly, while parsing strings. This implementation try to not allocate
@@ -11,7 +11,7 @@ use std::fmt::Write;
 pub struct Formatter<'input> {
     /// The JSON input bytes to prettify.
     input: &'input [u8],
-    /// Cursor position in byte offset.
+    /// Cursor position in byte offset (starting at 0)
     pos: BytePos,
     /// Current indentation level (this is maxed by [`MAX_INDENT_LEVEL`])
     level: usize,
@@ -22,12 +22,12 @@ pub struct Formatter<'input> {
 /// The maximum indentation level supported before errors.
 const MAX_INDENT_LEVEL: usize = 100;
 
-/// A byte position in a bytes stream.
-#[derive(Debug, Copy, Clone)]
+/// A byte position in a bytes stream (0-based index).
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct BytePos(usize);
 
 /// Potential errors raised during formatting.
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum FormatError {
     /// Unexpected end of file.
     Eof,
@@ -44,22 +44,33 @@ pub enum FormatError {
 
 impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn debug_str_u8(b: u8) -> String {
+            match char::from(b) {
+                c if c.is_ascii_graphic() || c == ' ' => {
+                    format!("0x{b:02x?}/'{c}'")
+                }
+                _ => format!("0x{b:02x?}"),
+            }
+        }
+
         match self {
             FormatError::Eof => write!(f, "unexpected end of file"),
             FormatError::InvalidByte(byte, pos) => {
-                write!(f, "invalid byte <{byte:02x?}> at offset {}", pos.0)
+                let byte = debug_str_u8(*byte);
+                write!(f, "invalid byte {byte} at offset {}", pos.0)
             }
             FormatError::InvalidUtf8(bytes, len, pos) => {
                 let hex = bytes
                     .iter()
                     .take(*len)
-                    .map(|b| format!("{:02x}", b))
+                    .map(|b| format!("0x{:02x}", b))
                     .collect::<Vec<_>>()
                     .join(" ");
-                write!(f, "invalid {} UTF-8 bytes <{hex}> at offset {}", len, pos.0)
+                write!(f, "invalid UTF-8 {} bytes {hex} at offset {}", len, pos.0)
             }
             FormatError::InvalidEscape(byte, pos) => {
-                write!(f, "invalid escaped byte <{byte:02x?}> at offset {}", pos.0)
+                let byte = debug_str_u8(*byte);
+                write!(f, "invalid escaped byte {byte} at offset {}", pos.0)
             }
             FormatError::MaxIndentLevel(level, pos) => {
                 write!(f, "maximum indent level {} at offset {}", level, pos.0)
@@ -667,7 +678,7 @@ impl<'input> Formatter<'input> {
 
 #[cfg(test)]
 mod tests {
-    use crate::format::{BytePos, Color, Formatter};
+    use super::{BytePos, Color, FormatError, Formatter};
 
     #[test]
     fn parse_number_ok() {
@@ -780,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn format_all() {
+    fn format_valid_json() {
         struct TestData {
             input: &'static str,
             expected: &'static str,
@@ -928,6 +939,18 @@ mod tests {
   ]
 }"#,
             },
+            TestData {
+                input: " { }",
+                expected: "{}",
+            },
+            TestData {
+                input: r#"{"X":{},"Y":{},"X":{}} "#,
+                expected: r#"{
+  "X": {},
+  "Y": {},
+  "X": {}
+}"#,
+            },
         ];
 
         for TestData { input, expected } in datas {
@@ -935,6 +958,443 @@ mod tests {
             let mut out = String::new();
             formatter.format(&mut out).unwrap();
             assert_eq!(out, expected)
+        }
+    }
+
+    // From Go Standard library <https://github.com/golang/go/blob/master/src/encoding/json/jsontext/decode_test.go>
+    #[test]
+    fn error_on_invalid() {
+        struct TestData {
+            name: &'static str,
+            input: &'static [u8],
+            expected_err: FormatError,
+            expected_message: &'static str,
+        }
+
+        let datas = [
+            TestData {
+                name: "Invalid start",
+                input: b" #",
+                expected_err: FormatError::InvalidByte(35, BytePos(1)),
+                expected_message: "invalid byte 0x23/'#' at offset 1",
+            },
+            TestData {
+                name: "Extra comma",
+                input: b" null , null ",
+                expected_err: FormatError::InvalidByte(44, BytePos(6)),
+                expected_message: "invalid byte 0x2c/',' at offset 6",
+            },
+            TestData {
+                name: "Truncated null",
+                input: b" nul",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid null",
+                input: b"nulL",
+                expected_err: FormatError::InvalidByte(76, BytePos(3)),
+                expected_message: "invalid byte 0x4c/'L' at offset 3",
+            },
+            TestData {
+                name: "Truncated false",
+                input: b"fals",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid false",
+                input: b"falsE",
+                expected_err: FormatError::InvalidByte(69, BytePos(4)),
+                expected_message: "invalid byte 0x45/'E' at offset 4",
+            },
+            TestData {
+                name: "Truncated true",
+                input: b"tru",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid true",
+                input: b"truE",
+                expected_err: FormatError::InvalidByte(69, BytePos(3)),
+                expected_message: "invalid byte 0x45/'E' at offset 3",
+            },
+            TestData {
+                name: "Invalid string",
+                input: br#""start"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated string",
+                input: br#""start"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid string",
+                input: b"\"ok \x00",
+                expected_err: FormatError::InvalidByte(0, BytePos(4)),
+                expected_message: "invalid byte 0x00 at offset 4",
+            },
+            TestData {
+                name: "Invalid UTF-8",
+                input: b"\"living\xde\xad\xbe\xef\"",
+                expected_err: FormatError::InvalidUtf8([0xbe, 0xef, 0, 0], 2, BytePos(9)),
+                expected_message: "invalid UTF-8 2 bytes 0xbe 0xef at offset 9",
+            },
+            TestData {
+                name: "Truncated number",
+                input: b"0.",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid number",
+                input: b"0.e",
+                expected_err: FormatError::InvalidByte(101, BytePos(2)),
+                expected_message: "invalid byte 0x65/'e' at offset 2",
+            },
+            TestData {
+                name: "Truncated number after start",
+                input: b"{",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated number after start",
+                input: b"{",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated number after name",
+                input: br#"{"0""#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated number after colon",
+                input: br#"{"0":"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated number after value",
+                input: br#"{"0":0"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated number after comma",
+                input: br#"{"0":0,"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid object missing colon",
+                input: br#" { "fizz" "buzz" } "#,
+                expected_err: FormatError::InvalidByte(34, BytePos(10)),
+                expected_message: "invalid byte 0x22/'\"' at offset 10",
+            },
+            TestData {
+                name: "Invalid object missing colon got comma",
+                input: br#" { "fizz" , "buzz" } "#,
+                expected_err: FormatError::InvalidByte(44, BytePos(10)),
+                expected_message: "invalid byte 0x2c/',' at offset 10",
+            },
+            TestData {
+                name: "Invalid object missing colon got hash",
+                input: br#" { "fizz" # "buzz" } "#,
+                expected_err: FormatError::InvalidByte(35, BytePos(10)),
+                expected_message: "invalid byte 0x23/'#' at offset 10",
+            },
+            TestData {
+                name: "Invalid object missing comma",
+                input: br#" { "fizz" : "buzz" "gazz" } "#,
+                expected_err: FormatError::InvalidByte(34, BytePos(19)),
+                expected_message: "invalid byte 0x22/'\"' at offset 19",
+            },
+            TestData {
+                name: "Invalid object missing comma got colon",
+                input: br#" { "fizz" : "buzz" : "gazz" } "#,
+                expected_err: FormatError::InvalidByte(58, BytePos(19)),
+                expected_message: "invalid byte 0x3a/':' at offset 19",
+            },
+            TestData {
+                name: "Invalid object missing comma got hash",
+                input: br#" { "fizz" : "buzz" # "gazz" } "#,
+                expected_err: FormatError::InvalidByte(35, BytePos(19)),
+                expected_message: "invalid byte 0x23/'#' at offset 19",
+            },
+            TestData {
+                name: "Invalid object extra comma after start",
+                input: br#" { , } "#,
+                expected_err: FormatError::InvalidByte(44, BytePos(3)),
+                expected_message: "invalid byte 0x2c/',' at offset 3",
+            },
+            TestData {
+                name: "Invalid object extra comma after value",
+                input: br#" { "fizz" : "buzz" , } "#,
+                expected_err: FormatError::InvalidByte(125, BytePos(21)),
+                expected_message: "invalid byte 0x7d/'}' at offset 21",
+            },
+            TestData {
+                name: "Invalid object invalid name got null",
+                input: br#" { null : null } "#,
+                expected_err: FormatError::InvalidByte(110, BytePos(3)),
+                expected_message: "invalid byte 0x6e/'n' at offset 3",
+            },
+            TestData {
+                name: "Invalid object invalid name got false",
+                input: br#" { false : false } "#,
+                expected_err: FormatError::InvalidByte(102, BytePos(3)),
+                expected_message: "invalid byte 0x66/'f' at offset 3",
+            },
+            TestData {
+                name: "Invalid object invalid name got true",
+                input: br#" { true : true } "#,
+                expected_err: FormatError::InvalidByte(116, BytePos(3)),
+                expected_message: "invalid byte 0x74/'t' at offset 3",
+            },
+            TestData {
+                name: "Invalid object invalid name got number",
+                input: br#" { 0 : 0 } "#,
+                expected_err: FormatError::InvalidByte(48, BytePos(3)),
+                expected_message: "invalid byte 0x30/'0' at offset 3",
+            },
+            TestData {
+                name: "Invalid object invalid name got object",
+                input: br#" { {} : {} } "#,
+                expected_err: FormatError::InvalidByte(123, BytePos(3)),
+                expected_message: "invalid byte 0x7b/'{' at offset 3",
+            },
+            TestData {
+                name: "Invalid object invalid name got array",
+                input: br#" { [] : [] } "#,
+                expected_err: FormatError::InvalidByte(91, BytePos(3)),
+                expected_message: "invalid byte 0x5b/'[' at offset 3",
+            },
+            TestData {
+                name: "Invalid object mismatching delim",
+                input: br#" { ] "#,
+                expected_err: FormatError::InvalidByte(93, BytePos(3)),
+                expected_message: "invalid byte 0x5d/']' at offset 3",
+            },
+            TestData {
+                name: "Invalid object mismatching delim",
+                input: br#" { ] "#,
+                expected_err: FormatError::InvalidByte(93, BytePos(3)),
+                expected_message: "invalid byte 0x5d/']' at offset 3",
+            },
+            TestData {
+                name: "Truncated array after start",
+                input: b"[",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated array after value",
+                input: b"[0",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Truncated array after comma",
+                input: b"[0,",
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid array missing comma",
+                input: br#"[ "fizz" "buzz" ] "#,
+                expected_err: FormatError::InvalidByte(34, BytePos(9)),
+                expected_message: "invalid byte 0x22/'\"' at offset 9",
+            },
+            TestData {
+                name: "Invalid array mismatching delim",
+                input: b" [ } ",
+                expected_err: FormatError::InvalidByte(125, BytePos(3)),
+                expected_message: "invalid byte 0x7d/'}' at offset 3",
+            },
+            TestData {
+                name: "Invalid delim after top level",
+                input: br#" "", "#,
+                expected_err: FormatError::InvalidByte(44, BytePos(3)),
+                expected_message: "invalid byte 0x2c/',' at offset 3",
+            },
+            TestData {
+                name: "Invalid delim after begin object",
+                input: b"{:",
+                expected_err: FormatError::InvalidByte(58, BytePos(1)),
+                expected_message: "invalid byte 0x3a/':' at offset 1",
+            },
+            TestData {
+                name: "Invalid delim after object name",
+                input: br#"{"","#,
+                expected_err: FormatError::InvalidByte(44, BytePos(3)),
+                expected_message: "invalid byte 0x2c/',' at offset 3",
+            },
+            TestData {
+                name: "Valid delim after object name",
+                input: br#"{"":"#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid delim after object value",
+                input: br#"{"":"":"#,
+                expected_err: FormatError::InvalidByte(58, BytePos(6)),
+                expected_message: "invalid byte 0x3a/':' at offset 6",
+            },
+            TestData {
+                name: "Valid delim after object value",
+                input: br#"{"":"","#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Invalid delim after begin array",
+                input: b"[,",
+                expected_err: FormatError::InvalidByte(44, BytePos(1)),
+                expected_message: "invalid byte 0x2c/',' at offset 1",
+            },
+            TestData {
+                name: "Invalid delim after array value",
+                input: br#"["":"#,
+                expected_err: FormatError::InvalidByte(58, BytePos(3)),
+                expected_message: "invalid byte 0x3a/':' at offset 3",
+            },
+            TestData {
+                name: "Valid delim after array value",
+                input: br#"["","#,
+                expected_err: FormatError::Eof,
+                expected_message: "unexpected end of file",
+            },
+            TestData {
+                name: "Error position",
+                input: b"\"a\xff000\"",
+                expected_err: FormatError::InvalidUtf8([255, 48, 48, 48], 4, BytePos(6)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x30 0x30 0x30 at offset 6",
+            },
+            TestData {
+                name: "Error position /0",
+                input: b" [ \"a\xff111\" ] ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(9)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 9",
+            },
+            TestData {
+                name: "Error position /1",
+                input: b" [ \"a1\" , \"b\xff111\" ] ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(16)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 16",
+            },
+            TestData {
+                name: "Error position /0/0",
+                input: b" [ [ \"a\xff222\" ] ] ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(11)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 11",
+            },
+            TestData {
+                name: "Error position /1/0",
+                input: b" [ \"a1\" , [ \"a\xff222\" ] ] ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(18)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 18",
+            },
+            TestData {
+                name: "Error position /0/1",
+                input: b" [ [ \"a2\" , \"b\xff222\" ] ] ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(18)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 18",
+            },
+            TestData {
+                name: "Error position /1/1",
+                input: b" [ \"a1\" , [ \"a2\" , \"b\xff222\" ] ] ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(25)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 25",
+            },
+            TestData {
+                name: "Error position /a1-",
+                input: b" { \"a\xff111\" : \"b1\" } ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(9)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 9",
+            },
+            TestData {
+                name: "Error position /a1",
+                input: b" { \"a1\" : \"b\xff111\" } ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(16)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 16",
+            },
+            TestData {
+                name: "Error position /c1-",
+                input: b" { \"a1\" : \"b1\" , \"c\xff111\" : \"d1\" } ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(23)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 23",
+            },
+            TestData {
+                name: "Error position /c1",
+                input: b"{ \"a1\" : \"b1\" , \"c1\" : \"d\xff111\" } ",
+                expected_err: FormatError::InvalidUtf8([255, 49, 49, 49], 4, BytePos(29)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x31 0x31 0x31 at offset 29",
+            },
+            TestData {
+                name: "Error position /a1/a2-",
+                input: b" { \"a1\" : { \"a\xff222\" : \"b2\" } } ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(18)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 18",
+            },
+            TestData {
+                name: "Error position /a1/a2",
+                input: b" { \"a1\" : { \"a2\" : \"b\xff222\" } } ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(25)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 25",
+            },
+            TestData {
+                name: "Error position /a1/c2-",
+                input: b" { \"a1\" : { \"a2\" : \"b2\" , \"c\xff222\" : \"d2\" } } ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(32)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 32",
+            },
+            TestData {
+                name: "Error position /a1/c2",
+                input: b" { \"a1\" : { \"a2\" : \"b2\" , \"c2\" : \"d\xff222\" } } ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(39)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 39",
+            },
+            TestData {
+                name: "Error position /1/a2",
+                input: b" [ \"a1\" , { \"a2\" : \"b\xff222\" } ] ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(25)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 25",
+            },
+            TestData {
+                name: "Error position /c1/1",
+                input: b" { \"a1\" : \"b1\" , \"c1\" : [ \"a2\" , \"b\xff222\" ] } ",
+                expected_err: FormatError::InvalidUtf8([255, 50, 50, 50], 4, BytePos(39)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x32 0x32 0x32 at offset 39",
+            },
+            TestData {
+                name: "Error position /0/a1/1/c3/1",
+                input: b" [ { \"a1\" : [ \"a2\" , { \"a3\" : \"b3\" , \"c3\" : [ \"a4\" , \"b\xff444\" ] } ] } ] ",
+                expected_err: FormatError::InvalidUtf8([255, 52, 52, 52], 4, BytePos(59)),
+                expected_message: "invalid UTF-8 4 bytes 0xff 0x34 0x34 0x34 at offset 59",
+            },
+        ];
+
+        for TestData {
+            name,
+            input,
+            expected_err,
+            expected_message,
+        } in datas
+        {
+            let mut formatter = Formatter::new(input, Color::NoColor);
+            let mut out = String::new();
+            let ret = formatter.format(&mut out);
+            let err = ret.unwrap_err();
+            assert_eq!(err, expected_err, "{name}");
+            assert_eq!(err.to_string(), expected_message, "{name}");
         }
     }
 }
