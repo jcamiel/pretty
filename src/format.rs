@@ -3,7 +3,7 @@ use std::fmt;
 use std::fmt::Write;
 
 /// A fast JSON formatter / pretty printer.
-/// This is a fast JSON formatter (x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
+/// This is a fast JSON formatter (up to x2 compared to pretty printing with [Serde JSON](https://github.com/serde-rs/json)).
 /// This formatter parses and formats JSON input byte by byte and do not require pre UTF-8 validation.
 /// UTF-8 validation is done in-place, on the fly, while parsing strings. This implementation try to not allocate
 /// anything. It does not try to normalise, remove unnecessary escaping, it just formats the actual input
@@ -13,7 +13,7 @@ pub struct Formatter<'input> {
     input: &'input [u8],
     /// Cursor position in byte offset.
     pos: BytePos,
-    /// Current indentation level (this is maxed by `MAX_INDENT_LEVEL`)
+    /// Current indentation level (this is maxed by [`MAX_INDENT_LEVEL`])
     level: usize,
     /// Use color with ANSI escape code when prettifying.
     color: Color,
@@ -90,6 +90,7 @@ enum StringMode {
 type FormatResult<T> = Result<T, FormatError>;
 
 impl<'input> Formatter<'input> {
+    /// Creates a new formater, with JSON `input` bytes to format and colorize.
     pub fn new(input: &'input [u8], color: Color) -> Self {
         Formatter {
             input,
@@ -99,6 +100,7 @@ impl<'input> Formatter<'input> {
         }
     }
 
+    /// Returns the next byte and advances the read position.
     #[inline]
     fn next_byte(&mut self) -> Option<u8> {
         let b = self.peek_byte()?;
@@ -106,6 +108,7 @@ impl<'input> Formatter<'input> {
         Some(b)
     }
 
+    /// Peeks the next byte without advancing the read position.
     #[inline]
     fn peek_byte(&mut self) -> Option<u8> {
         self.input.get(self.pos.0).copied()
@@ -131,7 +134,6 @@ impl<'input> Formatter<'input> {
     fn dec_level(&mut self) {
         self.level -= 1;
     }
-
 
     /// Formats and colorize the JSON input bytes.
     pub fn format(&mut self, out: &mut impl Write) -> FormatResult<()> {
@@ -778,12 +780,16 @@ mod tests {
     }
 
     #[test]
-    fn format_demo_string() {
-        let input = r#"{"strings":{"english":"Hello, world!","chinese":"你好，世界","japanese":"こんにちは世界","korean":"안녕하세요 세계","arabic":"مرحبا بالعالم","hindi":"नमस्ते दुनिया","russian":"Привет, мир","greek":"Γειά σου Κόσμε","hebrew":"שלום עולם","accented":"Curaçao, naïve, façade, jalapeño"},"numbers":{"zero":0,"positive_int":42,"negative_int":-42,"large_int":1234567890123456789,"small_float":0.000123,"negative_float":-3.14159,"large_float":1.7976931348623157e308,"smallest_float":5e-324,"sci_notation_positive":6.022e23,"sci_notation_negative":-2.99792458e8},"booleans":{"isActive":true,"isDeleted":false},"emojis":{"happy":"😀","sad":"😢","fire":"🔥","rocket":"🚀","earth":"🌍","heart":"❤️","multi":"👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"},"nothing":null}"#;
-        let mut formatter = Formatter::new(input.as_bytes(), Color::NoColor);
-        let mut out = String::new();
-        formatter.format(&mut out).unwrap();
-        assert_eq!(out, r#"{
+    fn format_all() {
+        struct TestData {
+            input: &'static str,
+            expected: &'static str,
+        }
+
+        let datas = [
+            TestData {
+                input: r#"{"strings":{"english":"Hello, world!","chinese":"你好，世界","japanese":"こんにちは世界","korean":"안녕하세요 세계","arabic":"مرحبا بالعالم","hindi":"नमस्ते दुनिया","russian":"Привет, мир","greek":"Γειά σου Κόσμε","hebrew":"שלום עולם","accented":"Curaçao, naïve, façade, jalapeño"},"numbers":{"zero":0,"positive_int":42,"negative_int":-42,"large_int":1234567890123456789,"small_float":0.000123,"negative_float":-3.14159,"large_float":1.7976931348623157e308,"smallest_float":5e-324,"sci_notation_positive":6.022e23,"sci_notation_negative":-2.99792458e8},"booleans":{"isActive":true,"isDeleted":false},"emojis":{"happy":"😀","sad":"😢","fire":"🔥","rocket":"🚀","earth":"🌍","heart":"❤️","multi":"👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"},"nothing":null}"#,
+                expected: r#"{
   "strings": {
     "english": "Hello, world!",
     "chinese": "你好，世界",
@@ -822,6 +828,113 @@ mod tests {
     "multi": "👩‍💻🧑🏽‍🚀👨‍👩‍👧‍👦"
   },
   "nothing": null
-}"#)
+}"#,
+            },
+            // From Go Standard library <https://github.com/golang/go/blob/master/src/encoding/json/jsontext/value_test.go>
+            // Primitives
+            TestData {
+                input: r#"{
+		"numbers": [333333333.33333329, 1E30, 4.50,
+					2e-3, 0.000000000000000000000000001, -0],
+		"string": "\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/",
+		"literals": [null, true, false]
+	}"#,
+                expected: r#"{
+  "numbers": [
+    333333333.33333329,
+    1E30,
+    4.50,
+    2e-3,
+    0.000000000000000000000000001,
+    -0
+  ],
+  "string": "\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/",
+  "literals": [
+    null,
+    true,
+    false
+  ]
+}"#,
+            },
+            TestData {
+                input: r#"{
+		"\u20ac": "Euro Sign",
+		"\r": "Carriage Return",
+		"\ufb33": "Hebrew Letter Dalet With Dagesh",
+		"1": "One",
+		"\ud83d\ude00": "Emoji: Grinning Face",
+		"\u0080": "Control",
+		"\u00f6": "Latin Small Letter O With Diaeresis"
+	}"#,
+                expected: r#"{
+  "\u20ac": "Euro Sign",
+  "\r": "Carriage Return",
+  "\ufb33": "Hebrew Letter Dalet With Dagesh",
+  "1": "One",
+  "\ud83d\ude00": "Emoji: Grinning Face",
+  "\u0080": "Control",
+  "\u00f6": "Latin Small Letter O With Diaeresis"
+}"#,
+            },
+            // LargeIntegers
+            TestData {
+                input: " [ -9223372036854775808 , 9223372036854775807 ] ",
+                expected: r#"[
+  -9223372036854775808,
+  9223372036854775807
+]"#,
+            },
+            // Duplicates
+            TestData {
+                input: r#" { "0" : 0 , "1" : 1 , "0" : 0 }"#,
+                expected: r#"{
+  "0": 0,
+  "1": 1,
+  "0": 0
+}"#,
+            },
+            // From jq "torture" tests <https://github.com/jqlang/jq/blob/master/tests/torture/input0.json>
+            TestData {
+                input: "[0,1,[12,22,[34,[45,56],7]],[]]",
+                expected: r#"[
+  0,
+  1,
+  [
+    12,
+    22,
+    [
+      34,
+      [
+        45,
+        56
+      ],
+      7
+    ]
+  ],
+  []
+]"#,
+            },
+            TestData {
+                input: r#"{"a":[{"b":[]},{},[2]]}"#,
+                expected: r#"{
+  "a": [
+    {
+      "b": []
+    },
+    {},
+    [
+      2
+    ]
+  ]
+}"#,
+            },
+        ];
+
+        for TestData { input, expected } in datas {
+            let mut formatter = Formatter::new(input.as_bytes(), Color::NoColor);
+            let mut out = String::new();
+            formatter.format(&mut out).unwrap();
+            assert_eq!(out, expected)
+        }
     }
 }
